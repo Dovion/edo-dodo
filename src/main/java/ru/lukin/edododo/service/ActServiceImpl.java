@@ -1,0 +1,648 @@
+package ru.lukin.edododo.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opencsv.CSVWriter;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.*;
+import org.springframework.data.mongodb.core.query.Criteria;
+import ru.lukin.edododo.dto.StatusUpdateRequest;
+import ru.lukin.edododo.exception.BadRequestException;
+import ru.lukin.edododo.exception.ResourceNotFoundException;
+import ru.lukin.edododo.model.*;
+import ru.lukin.edododo.repository.ActRepository;
+import ru.lukin.edododo.repository.FileRepository;
+import ru.lukin.edododo.service.ActService;
+import ru.lukin.edododo.service.SabyService;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+import static org.springframework.data.mongodb.core.aggregation.Aggregation.*;
+
+@Service
+public class ActServiceImpl implements ActService {
+
+    private static final List<String> VALID_STATUSES = List.of(
+            "Готов к отправке",
+            "Отправлен",
+            "Подписан",
+            "Нет ответа",
+            "Корректировки",
+            "В работе бухгалтерии",
+            "Закрыт"
+    );
+
+    private final ActRepository actRepository;
+    private final FileRepository fileRepository;
+    private final SabyService sabyService;
+    private final MongoTemplate mongoTemplate;
+    private final ObjectMapper objectMapper;
+
+    public ActServiceImpl(
+            ActRepository actRepository,
+            FileRepository fileRepository,
+            SabyService sabyService,
+            MongoTemplate mongoTemplate,
+            ObjectMapper objectMapper
+    ) {
+        this.actRepository = actRepository;
+        this.fileRepository = fileRepository;
+        this.sabyService = sabyService;
+        this.mongoTemplate = mongoTemplate;
+        this.objectMapper = objectMapper;
+    }
+
+    private Criteria buildCriteria(String period, String legalEntity, String search) {
+        List<Criteria> criteria = new ArrayList<>();
+        if (period != null && !period.isBlank()) criteria.add(Criteria.where("period").is(period));
+        if (legalEntity != null && !legalEntity.isBlank()) criteria.add(Criteria.where("legalEntity").is(legalEntity));
+        if (search != null && !search.isBlank()) {
+            Criteria searchCriteria = new Criteria().orOperator(
+                    Criteria.where("actNumber").regex(search, "i"),
+                    Criteria.where("counterparty").regex(search, "i"),
+                    Criteria.where("inn").regex(search, "i"),
+                    Criteria.where("legalEntity").regex(search, "i"),
+                    Criteria.where("responsibleAccountant").regex(search, "i")
+            );
+            criteria.add(searchCriteria);
+        }
+        return criteria.isEmpty() ? new Criteria() : new Criteria().andOperator(criteria.toArray(new Criteria[0]));
+    }
+
+    @Override
+    public Map<String, Object> getDashboardStats(String period, String legalEntity, String search) {
+        Criteria criteria = buildCriteria(period, legalEntity, search);
+        List<AggregationOperation> ops = new ArrayList<>();
+        if (criteria.getCriteriaObject() != null && !criteria.getCriteriaObject().isEmpty()) {
+            ops.add(match(criteria));
+        }
+        ops.add(group("status").count().as("count"));
+
+        AggregationResults<Map> results = mongoTemplate.aggregate(newAggregation(ops), "acts", Map.class);
+        Map<String, Long> statusCounts = new HashMap<>();
+        for (Map item : results.getMappedResults()) {
+            statusCounts.put(String.valueOf(item.get("_id")), ((Number) item.get("count")).longValue());
+        }
+
+        long total = statusCounts.values().stream().mapToLong(Long::longValue).sum();
+
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("total_acts", total);
+        stats.put("ready_to_send", statusCounts.getOrDefault("Готов к отправке", 0L));
+        stats.put("sent_waiting", statusCounts.getOrDefault("Отправлен", 0L) + statusCounts.getOrDefault("Нет ответа", 0L));
+        stats.put("signed", statusCounts.getOrDefault("Подписан", 0L));
+        stats.put("overdue", statusCounts.getOrDefault("Нет ответа", 0L));
+        stats.put("corrections", statusCounts.getOrDefault("Корректировки", 0L));
+        stats.put("escalated", statusCounts.getOrDefault("В работе бухгалтерии", 0L));
+        stats.put("closed", statusCounts.getOrDefault("Закрыт", 0L));
+        stats.put("status_breakdown", statusCounts);
+        return stats;
+    }
+
+    @Override
+    public Map<String, Object> getAttentionItems(String period, String legalEntity, String search) {  // ← Map!
+        Criteria base = buildCriteria(period, legalEntity, search);
+
+        // 1. Acts with no response
+        Criteria noRespCriteria = new Criteria().andOperator(base, Criteria.where("status").is("Нет ответа"));
+        long noResponseCount = mongoTemplate.count(org.springframework.data.mongodb.core.query.Query.query(noRespCriteria), "acts");
+
+        // 2. Large tail counterparties
+        Criteria largeTailCriteria = new Criteria().andOperator(base, Criteria.where("status").nin("Закрыт", "Подписан"));
+        Aggregation largeTailAgg = newAggregation(
+                match(largeTailCriteria),
+                group("counterparty").sum("amount").as("total"),
+                match(Criteria.where("total").gte(2000000)),
+                count().as("count")
+        );
+        AggregationResults<Map> largeTailResults = mongoTemplate.aggregate(largeTailAgg, "acts", Map.class);
+        long largeTailCount = largeTailResults.getMappedResults().isEmpty()
+                ? 0L
+                : ((Number) largeTailResults.getMappedResults().get(0).get("count")).longValue();
+
+        // 3. Low closure rate
+        List<AggregationOperation> lowClosureOps = new ArrayList<>();
+        if (!base.getCriteriaObject().isEmpty()) {
+            lowClosureOps.add(match(base));
+        }
+        lowClosureOps.add(group("legalEntity")
+                .count().as("total")
+                .sum(ConditionalOperators.when(Criteria.where("status").is("Закрыт"))
+                        .then(1)
+                        .otherwise(0)).as("closed"));
+        lowClosureOps.add(project("total", "closed")
+                .and(ConditionalOperators.when(Criteria.where("total").gt(0))
+                        .thenValueOf(ArithmeticOperators.Divide.valueOf("closed").divideBy("total"))
+                        .otherwise(0)).as("rate"));
+        lowClosureOps.add(match(Criteria.where("rate").lt(0.4)));
+        lowClosureOps.add(count().as("count"));
+
+        AggregationResults<Map> lowClosureResults = mongoTemplate.aggregate(
+                newAggregation(lowClosureOps), "acts", Map.class
+        );
+        long lowClosureCount = lowClosureResults.getMappedResults().isEmpty()
+                ? 0L
+                : ((Number) lowClosureResults.getMappedResults().get(0).get("count")).longValue();
+
+        // ← ВОТ ЗДЕСЬ ИЗМЕНЕНИЕ: return Map, НЕ List!
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("no_response_acts", noResponseCount);
+        result.put("large_tail_counterparties", largeTailCount);
+        result.put("low_closure_entities", lowClosureCount);
+        return result;  // ← Object!
+    }
+
+    @Override
+    public List<Map<String, Object>> getProcessStages(String period, String legalEntity, String search) {
+        Map<String, Object> stats = getDashboardStats(period, legalEntity, search);
+        Map<String, Long> breakdown = (Map<String, Long>) stats.get("status_breakdown");
+        long total = ((Number) stats.get("total_acts")).longValue();
+
+        List<Map<String, Object>> stages = new ArrayList<>();
+        stages.add(Map.of("name", "Загружено", "count", total));
+        stages.add(Map.of("name", "Готово к отправке", "count", breakdown.getOrDefault("Готов к отправке", 0L)));
+        stages.add(Map.of("name", "Отправлено", "count", breakdown.getOrDefault("Отправлен", 0L) + breakdown.getOrDefault("Нет ответа", 0L)));
+        stages.add(Map.of("name", "Ждём ответ", "count", breakdown.getOrDefault("Нет ответа", 0L) + breakdown.getOrDefault("Отправлен", 0L)));
+        stages.add(Map.of("name", "Подписано", "count", breakdown.getOrDefault("Подписан", 0L)));
+        stages.add(Map.of("name", "Закрыто", "count", breakdown.getOrDefault("Закрыт", 0L)));
+        return stages;
+    }
+
+    @Override
+    public Map<String, Object> getActs(String status, String legalEntity, String counterparty, String period, String search, int page, int limit) {
+        List<Criteria> criteria = new ArrayList<>();
+        if (status != null && !status.isBlank()) criteria.add(Criteria.where("status").is(status));
+        if (legalEntity != null && !legalEntity.isBlank()) criteria.add(Criteria.where("legalEntity").is(legalEntity));
+        if (counterparty != null && !counterparty.isBlank()) criteria.add(Criteria.where("counterparty").is(counterparty));
+        if (period != null && !period.isBlank()) criteria.add(Criteria.where("period").is(period));
+        if (search != null && !search.isBlank()) {
+            criteria.add(new Criteria().orOperator(
+                    Criteria.where("actNumber").regex(search, "i"),
+                    Criteria.where("counterparty").regex(search, "i"),
+                    Criteria.where("inn").regex(search, "i")
+            ));
+        }
+
+        Criteria finalCriteria = criteria.isEmpty() ? new Criteria() : new Criteria().andOperator(criteria.toArray(new Criteria[0]));
+
+        org.springframework.data.mongodb.core.query.Query query = new org.springframework.data.mongodb.core.query.Query(finalCriteria);
+        long total = mongoTemplate.count(query, ActDocument.class);
+
+        query.with(Sort.by(Sort.Direction.DESC, "createdAt"));
+        query.skip((long) (page - 1) * limit);
+        query.limit(limit);
+
+        List<ActDocument> acts = mongoTemplate.find(query, ActDocument.class);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("acts", acts);
+        response.put("total", total);
+        response.put("page", page);
+        response.put("limit", limit);
+        return response;
+    }
+
+    @Override
+    public Map<String, Object> exportActs(String status) {
+        org.springframework.data.mongodb.core.query.Query query = new org.springframework.data.mongodb.core.query.Query();
+        if (status != null && !status.isBlank()) {
+            query.addCriteria(Criteria.where("status").is(status));
+        }
+        List<ActDocument> acts = mongoTemplate.find(query, ActDocument.class);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("acts", acts);
+        result.put("exported_at", Instant.now().toString());
+        result.put("count", acts.size());
+        return result;
+    }
+
+    @Override
+    public ActDocument getActById(String actId) {
+        return actRepository.findById(actId)
+                .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+    }
+
+    @Override
+    public ActDocument updateActStatus(String actId, StatusUpdateRequest request) {
+        if (!VALID_STATUSES.contains(request.getStatus())) {
+            throw new BadRequestException("Недопустимый статус. Допустимые: " + VALID_STATUSES);
+        }
+
+        ActDocument act = getActById(actId);
+        var prevStatus = act.getStatus();
+        act.setStatus(request.getStatus());
+        act.setUpdatedAt(Instant.now());
+        act.getHistory().add(new HistoryEntry(
+                Instant.now(),
+                prevStatus,
+                request.getStatus(),
+                request.getComment() == null ? "" : request.getComment()
+        ));
+        return actRepository.save(act);
+    }
+
+    @Override
+    public Map<String, Object> sendToSaby(String actId, String documentType) {
+        ActDocument act = getActById(actId);
+        if (!"Готов к отправке".equals(act.getStatus())) {
+            throw new BadRequestException("Акт должен быть в статусе 'Готов к отправке'");
+        }
+
+        Map<String, Object> sabyResponse = sabyService.sendActToSaby(act);
+        if (!Boolean.TRUE.equals(sabyResponse.get("success"))) {
+            throw new BadRequestException(String.valueOf(sabyResponse.get("message")));
+        }
+
+        String sabySendId = String.valueOf(sabyResponse.get("document_id"));
+        String oldStatus = act.getStatus();
+
+        act.setStatus("Отправлен");
+        act.setSabySendId(sabySendId);
+        act.setSabyResponse(toJsonString(sabyResponse));
+        act.setUpdatedAt(Instant.now());
+        act.getHistory().add(new HistoryEntry(
+                Instant.now(),
+                oldStatus,
+                "Отправлен",
+                "Отправлено в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
+        ));
+
+        ActDocument saved = actRepository.save(act);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("act", saved);
+        result.put("saby_response", sabyResponse);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> sendBatchToSaby() {
+        List<ActDocument> acts = actRepository.findAll().stream()
+                .filter(a -> "Готов к отправке".equals(a.getStatus()))
+                .toList();
+
+        int sentCount = 0;
+        List<Map<String, Object>> errors = new ArrayList<>();
+
+        for (ActDocument act : acts) {
+            Map<String, Object> sabyResponse = sabyService.sendActToSaby(act);
+            if (!Boolean.TRUE.equals(sabyResponse.get("success"))) {
+                errors.add(Map.of("act_id", act.getId(), "error", sabyResponse.get("message")));
+                continue;
+            }
+
+            String sabySendId = String.valueOf(sabyResponse.get("document_id"));
+            act.setStatus("Отправлен");
+            act.setSabySendId(sabySendId);
+            act.setSabyResponse(toJsonString(sabyResponse));
+            act.setUpdatedAt(Instant.now());
+            act.getHistory().add(new HistoryEntry(
+                    Instant.now(),
+                    "Готов к отправке",
+                    "Отправлен",
+                    "Массовая отправка в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
+            ));
+            actRepository.save(act);
+            sentCount++;
+        }
+
+        String message = "Отправлено " + sentCount + " актов в СБИС" + (errors.isEmpty() ? "" : " (ошибок: " + errors.size() + ")");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sent_count", sentCount);
+        result.put("errors", errors);
+        result.put("message", message);
+        return result;
+    }
+
+    private String toJsonString(Object value) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
+    }
+
+    @Override
+    public Map<String, Object> uploadActs(MultipartFile file) {
+        try {
+            String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
+            List<Map<String, String>> rows = new ArrayList<>();
+
+            if (filename.endsWith(".json")) {
+                // JSON код без изменений
+                String text = new String(file.getBytes(), StandardCharsets.UTF_8);
+                ObjectMapper mapper = new ObjectMapper();
+                Object parsed = mapper.readValue(text, Object.class);
+                if (parsed instanceof List) {
+                    for (Object item : (List<?>) parsed) rows.add(mapper.convertValue(item, Map.class));
+                } else {
+                    rows.add(mapper.convertValue(parsed, Map.class));
+                }
+            } else if (filename.endsWith(".csv")) {
+                // CSV код без изменений
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
+                    String headerLine = br.readLine();
+                    if (headerLine == null) throw new BadRequestException("CSV пуст");
+                    String[] headers = headerLine.split(",");
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        String[] values = line.split(",", -1);
+                        Map<String, String> row = new HashMap<>();
+                        for (int i = 0; i < Math.min(headers.length, values.length); i++) {
+                            row.put(headers[i].trim(), values[i].trim());
+                        }
+                        rows.add(row);
+                    }
+                }
+            } else if (filename.endsWith(".xlsx") || filename.endsWith(".xls")) {
+                // ✅ НОВЫЙ: EXCEL
+                try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
+                    Sheet sheet = workbook.getSheetAt(0);
+                    Row headerRow = sheet.getRow(0);
+                    if (headerRow == null) throw new BadRequestException("Excel пуст");
+
+                    // Заголовки
+                    String[] headers = new String[(int) headerRow.getLastCellNum()];
+                    for (int i = 0; i < headers.length; i++) {
+                        Cell cell = headerRow.getCell(i);
+                        headers[i] = cell != null ? cell.toString().trim() : "";
+                    }
+
+                    // Данные (со 2 строки)
+                    for (int rowNum = 1; rowNum <= sheet.getLastRowNum(); rowNum++) {
+                        Row row = sheet.getRow(rowNum);
+                        if (row == null) continue;
+
+                        Map<String, String> dataRow = new HashMap<>();
+                        for (int i = 0; i < headers.length && i < row.getLastCellNum(); i++) {
+                            Cell cell = row.getCell(i);
+                            dataRow.put(headers[i], cellToString(cell));
+                        }
+                        rows.add(dataRow);
+                    }
+                }
+            } else {
+                throw new BadRequestException("Поддерживаются JSON, CSV, XLSX");
+            }
+
+            // Остальной код без изменений...
+            List<ActDocument> created = new ArrayList<>();
+            for (Map<String, String> row : rows) {
+                ActDocument act = new ActDocument();
+                act.setId(UUID.randomUUID().toString());
+                act.setActNumber(firstNonBlank(row, "act_number", "номер_акта"));
+                act.setLegalEntity(firstNonBlank(row, "legal_entity", "юрлицо"));
+                act.setCounterparty(firstNonBlank(row, "counterparty", "контрагент"));
+                act.setInn(firstNonBlank(row, "inn", "инн"));
+                act.setKpp(firstNonBlank(row, "kpp", "кпп"));
+                act.setPeriod(firstNonBlank(row, "period", "период"));
+                act.setFormationDate(firstNonBlank(row, "formation_date", "дата_формирования"));
+                act.setAmount(parseDouble(firstNonBlank(row, "amount", "сумма")));
+                act.setFilePath(firstNonBlank(row, "file_path", "путь_к_файлу"));
+                act.setResponsibleAccountant(firstNonBlank(row, "responsible_accountant", "бухгалтер"));
+                act.setSabyRequisites(firstNonBlank(row, "saby_requisites", "реквизиты_сбис"));
+                act.setStatus("Готов к отправке");
+                act.setCreatedAt(Instant.now());
+                act.setUpdatedAt(Instant.now());
+                act.setHistory(List.of(new HistoryEntry(Instant.now(), "", "Готов к отправке", "Загружено из файла")));
+                created.add(act);
+            }
+
+            if (!created.isEmpty()) actRepository.saveAll(created);
+            return Map.of("uploaded", created.size(), "message", "Загружено " + created.size() + " актов");
+        } catch (BadRequestException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BadRequestException("Ошибка чтения файла: " + e.getMessage());
+        }
+    }
+
+    // ✅ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
+    private String cellToString(Cell cell) {
+        if (cell == null) return "";
+
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue().trim();
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getDateCellValue().toString();
+                }
+                return String.valueOf((long) cell.getNumericCellValue());
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                return cell.getCellFormula();
+            default:
+                return "";
+        }
+    }
+
+    @Override
+    public byte[] generateSampleFilesZip() {
+        Map<String, Object> sampleAct = new HashMap<>();
+        sampleAct.put("act_number", "АКТ-ТЕСТ-001");
+        sampleAct.put("legal_entity", "ООО \"Альфа Трейд\"");
+        sampleAct.put("counterparty", "ООО \"СтройМонтаж\"");
+        sampleAct.put("inn", "7701234567");
+        sampleAct.put("kpp", "770101001");
+        sampleAct.put("period", "2 квартал 2026");
+        sampleAct.put("formation_date", "2026-02-01");
+        sampleAct.put("amount", 1500000.50);
+        sampleAct.put("file_path", "/docs/test_act.pdf");
+        sampleAct.put("responsible_accountant", "Петрова Е.И.");
+        sampleAct.put("saby_requisites", "saby_org_1234");
+
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ZipOutputStream zos = new ZipOutputStream(baos, StandardCharsets.UTF_8)) {
+
+            // 1. JSON
+            String jsonContent = objectMapper.writeValueAsString(List.of(sampleAct));
+            zos.putNextEntry(new ZipEntry("sample_act.json"));
+            zos.write(jsonContent.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            // 2. CSV
+            String[] headers = sampleAct.keySet().toArray(new String[0]);
+            String[] row = sampleAct.values().stream().map(Object::toString).toArray(String[]::new);
+
+            StringWriter csvWriter = new StringWriter();
+            try (CSVWriter csv = new CSVWriter(csvWriter)) {
+                csv.writeNext(headers);
+                csv.writeNext(row);
+            }
+            zos.putNextEntry(new ZipEntry("sample_act.csv"));
+            zos.write(csvWriter.toString().getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            // 3. Excel
+            try (Workbook wb = new XSSFWorkbook()) {
+                Sheet sheet = wb.createSheet("Акты сверки");
+                Row headerRow = sheet.createRow(0);
+                int col = 0;
+                for (String key : sampleAct.keySet()) {
+                    headerRow.createCell(col++).setCellValue(key);
+                }
+                Row dataRow = sheet.createRow(1);
+                col = 0;
+                for (Object value : sampleAct.values()) {
+                    dataRow.createCell(col++).setCellValue(value.toString());
+                }
+
+                ByteArrayOutputStream excelOut = new ByteArrayOutputStream();
+                wb.write(excelOut);
+                zos.putNextEntry(new ZipEntry("sample_act.xlsx"));
+                zos.write(excelOut.toByteArray());
+                zos.closeEntry();
+            }
+
+            zos.finish();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            throw new RuntimeException("Ошибка генерации ZIP шаблонов", e);
+        }
+    }
+
+    @Override
+    public Map<String, Object> seedTestData() {
+        actRepository.deleteAll();
+
+        List<String> legalEntities = List.of("ООО «Альфа Трейд»", "ООО «Бета Сервис»", "АО «Гамма Групп»");
+        List<String[]> counterparties = List.of(
+                new String[]{"ООО «СтройМонтаж»", "7701234567", "770101001"},
+                new String[]{"АО «ТехноПром»", "7702345678", "770201001"},
+                new String[]{"ООО «ЛогистикПлюс»", "7703456789", "770301001"},
+                new String[]{"ИП Иванов А.А.", "771234567890", ""},
+                new String[]{"ООО «ЭнергоСнаб»", "7704567890", "770401001"}
+        );
+        List<String> accountants = List.of("Петрова Е.И.", "Сидорова А.К.", "Козлова М.В.");
+        List<String> periods = List.of("1 квартал 2026", "2 квартал 2026");
+
+        // ✅ РЕАЛИСТИЧНАЯ ЦЕПочка статусов
+        Map<String, List<String>> statusHistory = Map.of(
+                "Готов к отправке", List.of(""),
+                "Отправлен", List.of("Готов к отправке", "Отправлен"),
+                "Нет ответа", List.of("Готов к отправке", "Отправлен", "Нет ответа"),
+                "Подписан", List.of("Готов к отправке", "Отправлен", "Подписан"),
+                "Корректировки", List.of("Готов к отправке", "Отправлен", "Корректировки"),
+                "В работе бухгалтерии", List.of("Готов к отправке", "Отправлен", "В работе бухгалтерии"),
+                "Закрыт", List.of("Готов к отправке", "Отправлен", "Подписан", "Закрыт")
+        );
+
+        List<Map.Entry<String, Integer>> distribution = List.of(
+                Map.entry("Готов к отправке", 25),
+                Map.entry("Отправлен", 15),
+                Map.entry("Подписан", 20),
+                Map.entry("Нет ответа", 10),
+                Map.entry("Корректировки", 8),
+                Map.entry("В работе бухгалтерии", 12),
+                Map.entry("Закрыт", 30)
+        );
+
+        List<ActDocument> acts = new ArrayList<>();
+        int actNum = 1;
+        Random random = new Random();
+
+        for (Map.Entry<String, Integer> item : distribution) {
+            String targetStatus = item.getKey();
+            for (int i = 0; i < item.getValue(); i++) {
+                String[] cp = counterparties.get(random.nextInt(counterparties.size()));
+                String le = legalEntities.get(random.nextInt(legalEntities.size()));
+                String period = periods.get(random.nextInt(periods.size()));
+                String accountant = accountants.get(random.nextInt(accountants.size()));
+                double amount = 50000 + random.nextDouble() * (15000000 - 50000);
+
+                ActDocument act = new ActDocument();
+                act.setId(UUID.randomUUID().toString());
+                act.setActNumber(String.format("АКТ-%04d", actNum++));
+                act.setLegalEntity(le);
+                act.setCounterparty(cp[0]);
+                act.setInn(cp[1]);
+                act.setKpp(cp[2]);
+                act.setPeriod(period);
+                act.setFormationDate(Instant.now().minusSeconds(random.nextInt(60) * 86400L).toString());
+                act.setAmount(Math.round(amount * 100.0) / 100.0);
+                act.setFilePath("/exports/acts/" + act.getActNumber() + ".pdf");
+                act.setResponsibleAccountant(accountant);
+                act.setSabyRequisites("saby_org_" + (1000 + random.nextInt(9000)));
+                act.setStatus(targetStatus);  // ✅ Текущий статус
+                act.setCreatedAt(Instant.now());
+                act.setUpdatedAt(Instant.now());
+
+                // ✅ РЕАЛИСТИЧНАЯ ИСТОРИЯ для статуса
+                List<String> historyStatuses = statusHistory.getOrDefault(targetStatus, List.of(""));
+                List<HistoryEntry> history = new ArrayList<>();
+
+                String prevStatus = "";
+                for (int h = 0; h < historyStatuses.size(); h++) {
+                    String status = historyStatuses.get(h);
+                    history.add(new HistoryEntry(
+                            Instant.now().minusSeconds((historyStatuses.size() - h) * 86400L),  // даты назад
+                            prevStatus,
+                            status,
+                            h == 0 ? "Загружено из 1С" : getStatusComment(status)
+                    ));
+                    prevStatus = status;
+                }
+                act.setHistory(history);
+
+                // ✅ SabySendId для "Отправлен" и дальше
+                if ("Отправлен".equals(targetStatus) ||
+                        Arrays.asList("Нет ответа", "Подписан", "Закрыт", "Корректировки", "В работе бухгалтерии").contains(targetStatus)) {
+                    act.setSabySendId("SABY-" + randomHexString(12));
+                }
+
+                acts.add(act);
+            }
+        }
+
+        actRepository.saveAll(acts);
+        return Map.of("seeded", acts.size(), "message", "Создано " + acts.size() + " тестовых актов с историей");
+    }
+
+    private String getStatusComment(String status) {
+        return switch (status) {
+            case "Отправлен" -> "Отправлено в СБИС";
+            case "Подписан" -> "Подписано контрагентом";
+            case "Нет ответа" -> "Превышен срок ответа";
+            case "Закрыт" -> "Цикл сверки завершён";
+            case "Корректировки" -> "Требуются корректировки";
+            case "В работе бухгалтерии" -> "Эскалация в бухгалтерию";
+            default -> "Смена статуса";
+        };
+    }
+
+    private String firstNonBlank(Map<String, String> row, String... keys) {
+        for (String key : keys) {
+            String value = row.get(key);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return "";
+    }
+
+    private Double parseDouble(String value) {
+        if (value == null || value.isBlank()) return 0.0;
+        return Double.parseDouble(value.replace(",", "."));
+    }
+
+    private String randomHexString(int length) {
+        Random random = new Random();
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            int digit = random.nextInt(16);
+            sb.append(Integer.toHexString(digit).toUpperCase());
+        }
+        return sb.toString();
+    }
+}

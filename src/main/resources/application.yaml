@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: edo-dodo
+  data:
+    mongodb:
+      uri: ${MONGO_URL:mongodb://localhost:27017}
+      database: ${DB_NAME:edo_dodo}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 50MB
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+app:
+  cors:
+    allowed-origins: http://localhost:3000,http://localhost,http://localhost:80
+  storage:
+    url: https://integrations.emergentagent.com/objstore/api/v1/storage
+    app-name: edo-case-manager
+
+emergent:
+  llm-key: ${EMERGENT_LLM_KEY:}
+
+logging:
+  level:
+    root: INFO
+    ru.lukin: DEBUG
+    org.springframework.data.mongodb.core.MongoTemplate: INFO
