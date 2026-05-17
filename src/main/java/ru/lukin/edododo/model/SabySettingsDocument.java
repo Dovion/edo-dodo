@@ -18,6 +18,9 @@ public class SabySettingsDocument {
     private String orgInn;
     private String apiLogin;
     private Instant authAt;
+    private String ourCompanyInn;
+    private String ourCompanyKpp;
+    private String ourCompanyName;
 
 
     public SabySettingsDocument() {
@@ -85,5 +88,29 @@ public class SabySettingsDocument {
 
     public void setAuthAt(Instant authAt) {
         this.authAt = authAt;
+    }
+
+    public String getOurCompanyInn() {
+        return ourCompanyInn;
+    }
+
+    public void setOurCompanyInn(String ourCompanyInn) {
+        this.ourCompanyInn = ourCompanyInn;
+    }
+
+    public String getOurCompanyKpp() {
+        return ourCompanyKpp;
+    }
+
+    public void setOurCompanyKpp(String ourCompanyKpp) {
+        this.ourCompanyKpp = ourCompanyKpp;
+    }
+
+    public String getOurCompanyName() {
+        return ourCompanyName;
+    }
+
+    public void setOurCompanyName(String ourCompanyName) {
+        this.ourCompanyName = ourCompanyName;
     }
 }

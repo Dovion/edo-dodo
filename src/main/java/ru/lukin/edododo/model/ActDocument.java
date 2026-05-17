@@ -16,9 +16,26 @@ public class ActDocument {
     private String id;
     private String actNumber;
     private String legalEntity;
-    private String counterparty;
-    private String inn;
-    private String kpp;
+
+    // === Контрагент (получатель акта) ===
+    private String counterparty;              // ФИО или название организации
+    private String counterpartyInn;           // ИНН контрагента (10 для юрлиц, 12 для ИП)
+    private String counterpartyKpp;           // КПП контрагента (только для юрлиц, пусто для ИП)
+    private String counterpartyType;          // "UL" (юрлицо), "IP" (ИП), "FL" (физлицо)
+
+    // ФИО для ИП/физлиц (раздельно для удобной отправки в СБИС)
+    private String counterpartyLastName;
+    private String counterpartyFirstName;
+    private String counterpartyPatronymic;
+
+    // === Наша организация (отправитель) ===
+    private String ourCompanyInn;
+    private String ourCompanyKpp;
+    private String ourCompanyName;
+
+    // === Общие поля акта ===
+    private String inn;                       // @Deprecated: используйте counterpartyInn / ourCompanyInn
+    private String kpp;                       // @Deprecated: используйте counterpartyKpp / ourCompanyKpp
     private String period;
     private String formationDate;
     private Double amount;
@@ -38,155 +55,97 @@ public class ActDocument {
     public ActDocument() {
     }
 
-    public String getMongoId() {
-        return mongoId;
-    }
+    // === Геттеры и сеттеры для mongoId и id ===
+    public String getMongoId() { return mongoId; }
+    public void setMongoId(String mongoId) { this.mongoId = mongoId; }
 
-    public void setMongoId(String mongoId) {
-        this.mongoId = mongoId;
-    }
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
 
-    public String getId() {
-        return id;
-    }
+    // === Основные поля ===
+    public String getActNumber() { return actNumber; }
+    public void setActNumber(String actNumber) { this.actNumber = actNumber; }
 
-    public void setId(String id) {
-        this.id = id;
-    }
+    public String getLegalEntity() { return legalEntity; }
+    public void setLegalEntity(String legalEntity) { this.legalEntity = legalEntity; }
 
-    public String getActNumber() {
-        return actNumber;
-    }
+    // === Контрагент ===
+    public String getCounterparty() { return counterparty; }
+    public void setCounterparty(String counterparty) { this.counterparty = counterparty; }
 
-    public void setActNumber(String actNumber) {
-        this.actNumber = actNumber;
-    }
+    public String getCounterpartyInn() { return counterpartyInn; }
+    public void setCounterpartyInn(String counterpartyInn) { this.counterpartyInn = counterpartyInn; }
 
-    public String getLegalEntity() {
-        return legalEntity;
-    }
+    public String getCounterpartyKpp() { return counterpartyKpp; }
+    public void setCounterpartyKpp(String counterpartyKpp) { this.counterpartyKpp = counterpartyKpp; }
 
-    public void setLegalEntity(String legalEntity) {
-        this.legalEntity = legalEntity;
-    }
+    public String getCounterpartyType() { return counterpartyType; }
+    public void setCounterpartyType(String counterpartyType) { this.counterpartyType = counterpartyType; }
 
-    public String getCounterparty() {
-        return counterparty;
-    }
+    public String getCounterpartyLastName() { return counterpartyLastName; }
+    public void setCounterpartyLastName(String counterpartyLastName) { this.counterpartyLastName = counterpartyLastName; }
 
-    public void setCounterparty(String counterparty) {
-        this.counterparty = counterparty;
-    }
+    public String getCounterpartyFirstName() { return counterpartyFirstName; }
+    public void setCounterpartyFirstName(String counterpartyFirstName) { this.counterpartyFirstName = counterpartyFirstName; }
 
-    public String getInn() {
-        return inn;
-    }
+    public String getCounterpartyPatronymic() { return counterpartyPatronymic; }
+    public void setCounterpartyPatronymic(String counterpartyPatronymic) { this.counterpartyPatronymic = counterpartyPatronymic; }
 
-    public void setInn(String inn) {
-        this.inn = inn;
-    }
+    // === Наша организация ===
+    public String getOurCompanyInn() { return ourCompanyInn; }
+    public void setOurCompanyInn(String ourCompanyInn) { this.ourCompanyInn = ourCompanyInn; }
 
-    public String getKpp() {
-        return kpp;
-    }
+    public String getOurCompanyKpp() { return ourCompanyKpp; }
+    public void setOurCompanyKpp(String ourCompanyKpp) { this.ourCompanyKpp = ourCompanyKpp; }
 
-    public void setKpp(String kpp) {
-        this.kpp = kpp;
-    }
+    public String getOurCompanyName() { return ourCompanyName; }
+    public void setOurCompanyName(String ourCompanyName) { this.ourCompanyName = ourCompanyName; }
 
-    public String getPeriod() {
-        return period;
-    }
+    // === Устаревшие поля (для обратной совместимости) ===
+    @Deprecated
+    public String getInn() { return inn; }
+    @Deprecated
+    public void setInn(String inn) { this.inn = inn; }
 
-    public void setPeriod(String period) {
-        this.period = period;
-    }
+    @Deprecated
+    public String getKpp() { return kpp; }
+    @Deprecated
+    public void setKpp(String kpp) { this.kpp = kpp; }
 
-    public String getFormationDate() {
-        return formationDate;
-    }
+    // === Остальные поля ===
+    public String getPeriod() { return period; }
+    public void setPeriod(String period) { this.period = period; }
 
-    public void setFormationDate(String formationDate) {
-        this.formationDate = formationDate;
-    }
+    public String getFormationDate() { return formationDate; }
+    public void setFormationDate(String formationDate) { this.formationDate = formationDate; }
 
-    public Double getAmount() {
-        return amount;
-    }
+    public Double getAmount() { return amount; }
+    public void setAmount(Double amount) { this.amount = amount; }
 
-    public void setAmount(Double amount) {
-        this.amount = amount;
-    }
+    public String getFilePath() { return filePath; }
+    public void setFilePath(String filePath) { this.filePath = filePath; }
 
-    public String getFilePath() {
-        return filePath;
-    }
+    public String getResponsibleAccountant() { return responsibleAccountant; }
+    public void setResponsibleAccountant(String responsibleAccountant) { this.responsibleAccountant = responsibleAccountant; }
 
-    public void setFilePath(String filePath) {
-        this.filePath = filePath;
-    }
+    public String getSabyRequisites() { return sabyRequisites; }
+    public void setSabyRequisites(String sabyRequisites) { this.sabyRequisites = sabyRequisites; }
 
-    public String getResponsibleAccountant() {
-        return responsibleAccountant;
-    }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
 
-    public void setResponsibleAccountant(String responsibleAccountant) {
-        this.responsibleAccountant = responsibleAccountant;
-    }
+    public String getSabySendId() { return sabySendId; }
+    public void setSabySendId(String sabySendId) { this.sabySendId = sabySendId; }
 
-    public String getSabyRequisites() {
-        return sabyRequisites;
-    }
+    public String getSabyResponse() { return sabyResponse; }
+    public void setSabyResponse(String sabyResponse) { this.sabyResponse = sabyResponse; }
 
-    public void setSabyRequisites(String sabyRequisites) {
-        this.sabyRequisites = sabyRequisites;
-    }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 
-    public String getStatus() {
-        return status;
-    }
+    public Instant getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
-    public String getSabySendId() {
-        return sabySendId;
-    }
-
-    public void setSabySendId(String sabySendId) {
-        this.sabySendId = sabySendId;
-    }
-
-    public String getSabyResponse() {
-        return sabyResponse;
-    }
-
-    public void setSabyResponse(String sabyResponse) {
-        this.sabyResponse = sabyResponse;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(Instant createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(Instant updatedAt) {
-        this.updatedAt = updatedAt;
-    }
-
-    public List<HistoryEntry> getHistory() {
-        return history;
-    }
-
-    public void setHistory(List<HistoryEntry> history) {
-        this.history = history;
-    }
+    public List<HistoryEntry> getHistory() { return history; }
+    public void setHistory(List<HistoryEntry> history) { this.history = history; }
 }

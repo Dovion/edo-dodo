@@ -4,26 +4,40 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opencsv.CSVWriter;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.*;
 import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import ru.lukin.edododo.dto.StatusUpdateRequest;
 import ru.lukin.edododo.exception.BadRequestException;
 import ru.lukin.edododo.exception.ResourceNotFoundException;
-import ru.lukin.edododo.model.*;
+import ru.lukin.edododo.model.ActDocument;
+import ru.lukin.edododo.model.FileDocument;
+import ru.lukin.edododo.model.HistoryEntry;
 import ru.lukin.edododo.repository.ActRepository;
 import ru.lukin.edododo.repository.FileRepository;
-import ru.lukin.edododo.service.ActService;
-import ru.lukin.edododo.service.SabyService;
-import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
-import java.time.ZoneOffset;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.IsoFields;
+import java.time.temporal.TemporalField;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -48,7 +62,8 @@ public class ActServiceImpl implements ActService {
     private final SabyService sabyService;
     private final MongoTemplate mongoTemplate;
     private final ObjectMapper objectMapper;
-
+    @Value("${app.uploads-dir:uploads}")
+    private String uploadsDir;
     public ActServiceImpl(
             ActRepository actRepository,
             FileRepository fileRepository,
@@ -184,7 +199,8 @@ public class ActServiceImpl implements ActService {
         List<Criteria> criteria = new ArrayList<>();
         if (status != null && !status.isBlank()) criteria.add(Criteria.where("status").is(status));
         if (legalEntity != null && !legalEntity.isBlank()) criteria.add(Criteria.where("legalEntity").is(legalEntity));
-        if (counterparty != null && !counterparty.isBlank()) criteria.add(Criteria.where("counterparty").is(counterparty));
+        if (counterparty != null && !counterparty.isBlank())
+            criteria.add(Criteria.where("counterparty").is(counterparty));
         if (period != null && !period.isBlank()) criteria.add(Criteria.where("period").is(period));
         if (search != null && !search.isBlank()) {
             criteria.add(new Criteria().orOperator(
@@ -336,11 +352,21 @@ public class ActServiceImpl implements ActService {
     @Override
     public Map<String, Object> uploadActs(MultipartFile file) {
         try {
+            Path uploadPath = Paths.get(uploadsDir).toAbsolutePath().normalize();
+            Files.createDirectories(uploadPath);
+
+            String savedFileName = null;
             String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
             List<Map<String, String>> rows = new ArrayList<>();
 
+            // Сохраняем исходный файл, если это PDF или XML
+            if (filename.endsWith(".pdf") || filename.endsWith(".xml")) {
+                savedFileName = UUID.randomUUID() + "_" + file.getOriginalFilename();
+                Path targetPath = uploadPath.resolve(savedFileName);
+                Files.copy(file.getInputStream(), targetPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+
             if (filename.endsWith(".json")) {
-                // JSON код без изменений
                 String text = new String(file.getBytes(), StandardCharsets.UTF_8);
                 ObjectMapper mapper = new ObjectMapper();
                 Object parsed = mapper.readValue(text, Object.class);
@@ -350,7 +376,6 @@ public class ActServiceImpl implements ActService {
                     rows.add(mapper.convertValue(parsed, Map.class));
                 }
             } else if (filename.endsWith(".csv")) {
-                // CSV код без изменений
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
                     String headerLine = br.readLine();
                     if (headerLine == null) throw new BadRequestException("CSV пуст");
@@ -366,24 +391,18 @@ public class ActServiceImpl implements ActService {
                     }
                 }
             } else if (filename.endsWith(".xlsx") || filename.endsWith(".xls")) {
-                // ✅ НОВЫЙ: EXCEL
                 try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
                     Sheet sheet = workbook.getSheetAt(0);
                     Row headerRow = sheet.getRow(0);
                     if (headerRow == null) throw new BadRequestException("Excel пуст");
-
-                    // Заголовки
                     String[] headers = new String[(int) headerRow.getLastCellNum()];
                     for (int i = 0; i < headers.length; i++) {
                         Cell cell = headerRow.getCell(i);
                         headers[i] = cell != null ? cell.toString().trim() : "";
                     }
-
-                    // Данные (со 2 строки)
                     for (int rowNum = 1; rowNum <= sheet.getLastRowNum(); rowNum++) {
                         Row row = sheet.getRow(rowNum);
                         if (row == null) continue;
-
                         Map<String, String> dataRow = new HashMap<>();
                         for (int i = 0; i < headers.length && i < row.getLastCellNum(); i++) {
                             Cell cell = row.getCell(i);
@@ -392,26 +411,175 @@ public class ActServiceImpl implements ActService {
                         rows.add(dataRow);
                     }
                 }
-            } else {
-                throw new BadRequestException("Поддерживаются JSON, CSV, XLSX");
+            } else if (filename.endsWith(".xml")) {
+                try {
+                    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+                    factory.setNamespaceAware(false);
+                    DocumentBuilder builder = factory.newDocumentBuilder();
+                    Document xmlDoc = builder.parse(new ByteArrayInputStream(file.getBytes()));
+                    xmlDoc.getDocumentElement().normalize();
+
+                    NodeList documentNodes = xmlDoc.getElementsByTagName("Документ");
+                    if (documentNodes.getLength() == 0) {
+                        throw new BadRequestException("XML не содержит узел Документ");
+                    }
+
+                    for (int i = 0; i < documentNodes.getLength(); i++) {
+                        Element documentEl = (Element) documentNodes.item(i);
+                        Map<String, String> row = new HashMap<>();
+
+                        // === Основные поля документа ===
+                        row.put("act_number", documentEl.getAttribute("НомерАкт"));
+                        row.put("formation_date", documentEl.getAttribute("ДатаИнфОтпр"));
+
+                        String startPeriod = documentEl.getAttribute("ДатаНачПер");
+                        String endPeriod = documentEl.getAttribute("ДатаОкПер");
+                        row.put("period_start", startPeriod);
+                        row.put("period_end", endPeriod);
+                        row.put("period", buildPeriodFromXml(startPeriod, endPeriod));
+
+                        // === НАША ОРГАНИЗАЦИЯ: ищем вложенные элементы последовательно ===
+                        // <Документ> → <СвДокКрАкт> → <СвОтпр> → <ИдСв> → <СвЮЛУч>
+                        Element docInfo = getFirstChildElementByTag(documentEl, "СвДокКрАкт");
+                        if (docInfo != null) {
+                            Element senderBlock = getFirstChildElementByTag(docInfo, "СвОтпр");
+                            if (senderBlock != null) {
+                                Element idBlock = getFirstChildElementByTag(senderBlock, "ИдСв");
+                                if (idBlock != null) {
+                                    Element ourCompany = getFirstChildElementByTag(idBlock, "СвЮЛУч");
+                                    if (ourCompany != null) {
+                                        row.put("our_company_name", ourCompany.getAttribute("НаимОрг"));
+                                        row.put("our_company_inn", ourCompany.getAttribute("ИННЮЛ"));
+                                        row.put("our_company_kpp", ourCompany.getAttribute("КПП"));
+                                    }
+                                }
+                            }
+                        }
+
+                        // === КОНТРАГЕНТ: <СвДокКрАкт> → <СвПол> → <ИдСв> → [СвФЛ | СвИП | СвЮЛ] ===
+                        if (docInfo != null) {
+                            Element recipientBlock = getFirstChildElementByTag(docInfo, "СвПол");
+                            if (recipientBlock != null) {
+                                Element idBlock = getFirstChildElementByTag(recipientBlock, "ИдСв");
+                                if (idBlock != null) {
+                                    // 1. Физическое лицо (СвФЛ)
+                                    Element counterpartyFl = getFirstChildElementByTag(idBlock, "СвФЛ");
+                                    if (counterpartyFl != null) {
+                                        Element fio = getFirstChildElementByTag(counterpartyFl, "ФИО");
+                                        if (fio != null) {
+                                            String last = fio.getAttribute("Фамилия");
+                                            String first = fio.getAttribute("Имя");
+                                            String mid = fio.getAttribute("Отчество");
+                                            row.put("counterparty", String.join(" ", last, first, mid).trim());
+                                            row.put("counterparty_last", last);
+                                            row.put("counterparty_first", first);
+                                            row.put("counterparty_patronymic", mid);
+                                        }
+                                        row.put("counterparty_inn", counterpartyFl.getAttribute("ИННФЛ"));
+                                        row.put("counterparty_kpp", "");
+                                        row.put("counterparty_type", "FL");
+                                    }
+                                    // 2. Индивидуальный предприниматель (СвИП)
+                                    else {
+                                        Element counterpartyIp = getFirstChildElementByTag(idBlock, "СвИП");
+                                        if (counterpartyIp != null) {
+                                            Element fio = getFirstChildElementByTag(counterpartyIp, "ФИО");
+                                            if (fio != null) {
+                                                String last = fio.getAttribute("Фамилия");
+                                                String first = fio.getAttribute("Имя");
+                                                String mid = fio.getAttribute("Отчество");
+                                                row.put("counterparty", String.join(" ", last, first, mid).trim());
+                                                row.put("counterparty_last", last);
+                                                row.put("counterparty_first", first);
+                                                row.put("counterparty_patronymic", mid);
+                                            }
+                                            row.put("counterparty_inn", counterpartyIp.getAttribute("ИННФЛ"));
+                                            row.put("counterparty_kpp", "");
+                                            row.put("counterparty_type", "IP");
+                                        }
+                                        // 3. Юридическое лицо (СвЮЛ)
+                                        else {
+                                            Element counterpartyUl = getFirstChildElementByTag(idBlock, "СвЮЛ");
+                                            if (counterpartyUl != null) {
+                                                row.put("counterparty", counterpartyUl.getAttribute("НаимОрг"));
+                                                row.put("counterparty_inn", counterpartyUl.getAttribute("ИННЮЛ"));
+                                                row.put("counterparty_kpp", counterpartyUl.getAttribute("КПП"));
+                                                row.put("counterparty_type", "UL");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // === Сумма из <ТаблАкт> ===
+                        Element totals = getFirstChildElementByTag(documentEl, "ТаблАкт");
+                        if (totals != null) {
+                            row.put("amount", firstNonBlank(
+                                    totals.getAttribute("ОборотКр"),
+                                    totals.getAttribute("ОборотДеб")
+                            ));
+                        }
+
+                        // Метаданные
+                        row.put("source_format", "1c_xml");
+                        row.put("source_external_id", xmlDoc.getDocumentElement().getAttribute("ИдФайл"));
+
+                        rows.add(row);
+                    }
+                } catch (BadRequestException e) {
+                    throw e;
+                } catch (Exception e) {
+                    throw new BadRequestException("Ошибка чтения XML: " + e.getMessage());
+                }
             }
 
-            // Остальной код без изменений...
+            // === Создание ActDocument из распаршенных данных ===
             List<ActDocument> created = new ArrayList<>();
             for (Map<String, String> row : rows) {
                 ActDocument act = new ActDocument();
                 act.setId(UUID.randomUUID().toString());
                 act.setActNumber(firstNonBlank(row, "act_number", "номер_акта"));
                 act.setLegalEntity(firstNonBlank(row, "legal_entity", "юрлицо"));
-                act.setCounterparty(firstNonBlank(row, "counterparty", "контрагент"));
-                act.setInn(firstNonBlank(row, "inn", "инн"));
-                act.setKpp(firstNonBlank(row, "kpp", "кпп"));
+
+                // Контрагент (новые поля)
+                act.setCounterparty(firstNonBlank(row, "counterparty"));
+                act.setCounterpartyInn(firstNonBlank(row, "counterparty_inn"));
+                act.setCounterpartyKpp(firstNonBlank(row, "counterparty_kpp"));
+                act.setCounterpartyType(firstNonBlank(row, "counterparty_type"));
+                act.setCounterpartyLastName(firstNonBlank(row, "counterparty_last"));
+                act.setCounterpartyFirstName(firstNonBlank(row, "counterparty_first"));
+                act.setCounterpartyPatronymic(firstNonBlank(row, "counterparty_patronymic"));
+
+                // Наша организация (новые поля)
+                act.setOurCompanyName(firstNonBlank(row, "our_company_name"));
+                act.setOurCompanyInn(firstNonBlank(row, "our_company_inn"));
+                act.setOurCompanyKpp(firstNonBlank(row, "our_company_kpp"));
+
+                act.setLegalEntity(firstNonBlank(row, "our_company_name"));
+                act.setInn(firstNonBlank(row, "our_company_inn"));
+                act.setKpp(firstNonBlank(row, "our_company_kpp"));
+
+
                 act.setPeriod(firstNonBlank(row, "period", "период"));
                 act.setFormationDate(firstNonBlank(row, "formation_date", "дата_формирования"));
                 act.setAmount(parseDouble(firstNonBlank(row, "amount", "сумма")));
                 act.setFilePath(firstNonBlank(row, "file_path", "путь_к_файлу"));
                 act.setResponsibleAccountant(firstNonBlank(row, "responsible_accountant", "бухгалтер"));
                 act.setSabyRequisites(firstNonBlank(row, "saby_requisites", "реквизиты_сбис"));
+
+                // Путь к файлу
+                if (savedFileName != null) {
+                    act.setFilePath(uploadPath.resolve(savedFileName).toString());
+                } else {
+                    String pathFromData = firstNonBlank(row, "file_path", "путь_к_файлу");
+                    if (pathFromData != null && !pathFromData.isBlank() && Files.exists(Paths.get(pathFromData))) {
+                        act.setFilePath(pathFromData);
+                    } else {
+                        act.setFilePath(null);
+                    }
+                }
+
                 act.setStatus("Готов к отправке");
                 act.setCreatedAt(Instant.now());
                 act.setUpdatedAt(Instant.now());
@@ -419,8 +587,57 @@ public class ActServiceImpl implements ActService {
                 created.add(act);
             }
 
-            if (!created.isEmpty()) actRepository.saveAll(created);
-            return Map.of("uploaded", created.size(), "message", "Загружено " + created.size() + " актов");
+            // === Сохранение актов и создание вложений (FileDocument) ===
+            Path baseDir = Paths.get(uploadsDir).toAbsolutePath().normalize();
+            List<ActDocument> savedActs = actRepository.saveAll(created);
+            int attachmentsCreated = 0;
+
+            for (ActDocument act : savedActs) {
+                Path actDir = baseDir.resolve("acts").resolve(act.getId());
+                try {
+                    Files.createDirectories(actDir);
+                } catch (IOException e) {
+                    System.err.println("Не удалось создать папку для акта " + act.getId() + ": " + e.getMessage());
+                    continue;
+                }
+
+                String originalName = file.getOriginalFilename();
+                String safeName = UUID.randomUUID() + "_" + (originalName != null ? originalName : "act");
+                Path filePath = actDir.resolve(safeName);
+
+                try {
+                    if (Files.notExists(filePath) && (filename.endsWith(".pdf") || filename.endsWith(".xml"))) {
+                        Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } catch (IOException e) {
+                    System.err.println("Не удалось сохранить файл для акта " + act.getId() + ": " + e.getMessage());
+                    continue;
+                }
+
+                act.setFilePath(filePath.toString());
+
+                FileDocument fileDoc = new FileDocument();
+                fileDoc.setId(UUID.randomUUID().toString());
+                fileDoc.setActId(act.getId());
+                fileDoc.setStoragePath("acts/" + act.getId() + "/" + safeName);
+                fileDoc.setOriginalFilename(originalName);
+                fileDoc.setContentType(Files.probeContentType(filePath));
+                fileDoc.setSize(Files.size(filePath));
+                fileDoc.setDeleted(false);
+                fileDoc.setCreatedAt(Instant.now());
+
+                fileRepository.save(fileDoc);
+                attachmentsCreated++;
+            }
+
+            actRepository.saveAll(savedActs);
+
+            return Map.of(
+                    "uploaded", savedActs.size(),
+                    "attachments_created", attachmentsCreated,
+                    "message", "Загружено " + savedActs.size() + " актов, создано " + attachmentsCreated + " вложений"
+            );
+
         } catch (BadRequestException e) {
             throw e;
         } catch (Exception e) {
@@ -429,6 +646,18 @@ public class ActServiceImpl implements ActService {
     }
 
     // ✅ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
+
+    private Element findElementInContext(Element parent, String tagName) {
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node node = children.item(i);
+            if (node instanceof Element element && tagName.equals(element.getNodeName())) {
+                return element;
+            }
+        }
+        return null;
+    }
+
     private String cellToString(Cell cell) {
         if (cell == null) return "";
 
@@ -644,5 +873,82 @@ public class ActServiceImpl implements ActService {
             sb.append(Integer.toHexString(digit).toUpperCase());
         }
         return sb.toString();
+    }
+
+    private Element getFirstChildElementByTag(Element parent, String tagName) {
+        NodeList nodes = parent.getElementsByTagName(tagName);
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node node = nodes.item(i);
+            if (node instanceof Element element) {
+                return element;
+            }
+        }
+        return null;
+    }
+
+    private String buildFlFullName(Element flElement) {
+        Element fio = getFirstChildElementByTag(flElement, "ФИО");
+        if (fio == null) return "";
+
+        String surname = fio.getAttribute("Фамилия");
+        String name = fio.getAttribute("Имя");
+        String patronymic = fio.getAttribute("Отчество");
+
+        List<String> parts = new ArrayList<>();
+        if (surname != null && !surname.isBlank()) parts.add(surname);
+        if (name != null && !name.isBlank()) parts.add(name);
+        if (patronymic != null && !patronymic.isBlank()) parts.add(patronymic);
+
+        return String.join(" ", parts);
+    }
+
+    private String buildPeriodFromXml(String startDateStr, String endDateStr) {
+        if (startDateStr == null || startDateStr.isBlank()) return "";
+
+        try {
+            LocalDate start = LocalDate.parse(startDateStr, DateTimeFormatter.ofPattern("dd.MM.yyyy"));
+            LocalDate end = endDateStr != null && !endDateStr.isBlank()
+                    ? LocalDate.parse(endDateStr, DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+                    : start;
+
+            TemporalField quarterField = IsoFields.QUARTER_OF_YEAR;
+            int quarter = start.get(quarterField);
+            int year = start.getYear();
+
+            // Если период не укладывается в квартал, показываем даты
+            if (end.getYear() != year || end.get(quarterField) != quarter) {
+                return start.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")) +
+                        " — " + end.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"));
+            }
+
+            return quarter + " квартал " + year;
+        } catch (DateTimeParseException e) {
+            return startDateStr + (endDateStr != null ? " — " + endDateStr : "");
+        }
+    }
+
+    private String buildIpFullName(Element ipElement) {
+        Element fio = getFirstChildElementByTag(ipElement, "ФИО");
+        if (fio == null) return "";
+
+        String surname = fio.getAttribute("Фамилия");
+        String name = fio.getAttribute("Имя");
+        String patronymic = fio.getAttribute("Отчество");
+
+        List<String> parts = new ArrayList<>();
+        if (surname != null && !surname.isBlank()) parts.add(surname);
+        if (name != null && !name.isBlank()) parts.add(name);
+        if (patronymic != null && !patronymic.isBlank()) parts.add(patronymic);
+
+        return String.join(" ", parts);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank() && !"-".equals(value.trim())) {
+                return value.trim();
+            }
+        }
+        return "0.00";
     }
 }

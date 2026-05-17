@@ -58,7 +58,11 @@ public class FileServiceImpl implements FileService {
             doc.setDeleted(false);
             doc.setCreatedAt(Instant.now());
 
-            return fileRepository.save(doc);
+            var res = fileRepository.save(doc);
+            act.setFilePath(filePath.toString());  // абсолютный путь
+            act.setUpdatedAt(Instant.now());
+            actRepository.save(act);
+            return res;
         } catch (IOException e) {
             throw new RuntimeException("Ошибка: " + e.getMessage(), e);
         }

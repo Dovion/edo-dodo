@@ -21,6 +21,7 @@ app:
   storage:
     url: https://integrations.emergentagent.com/objstore/api/v1/storage
     app-name: edo-case-manager
+  uploads-dir: uploads
 
 emergent:
   llm-key: ${EMERGENT_LLM_KEY:}

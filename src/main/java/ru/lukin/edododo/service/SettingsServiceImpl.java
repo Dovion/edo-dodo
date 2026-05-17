@@ -75,4 +75,19 @@ public class SettingsServiceImpl implements SettingsService {
         settingsRepository.save(settings);
     }
 
+    public String getOurCompanyInn() {
+        SabySettingsDocument s = getSabySettings();
+        return s != null ? s.getOurCompanyInn() : null;
+    }
+
+    public String getOurCompanyKpp() {
+        SabySettingsDocument s = getSabySettings();
+        return s != null ? s.getOurCompanyKpp() : null;
+    }
+
+    public String getOurCompanyName() {
+        SabySettingsDocument s = getSabySettings();
+        return s != null ? s.getOurCompanyName() : null;
+    }
+
 }

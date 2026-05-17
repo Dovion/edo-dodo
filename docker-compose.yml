@@ -7,6 +7,7 @@ services:
       - "8080:8080"
     environment:
       - MONGO_URL=mongodb://mongo:27017/edo_dodo
+      - APP_UPLOADS_DIR=/app/uploads  # ← Путь ВНУТРИ контейнера
     volumes:
       - uploads:/app/uploads
 
