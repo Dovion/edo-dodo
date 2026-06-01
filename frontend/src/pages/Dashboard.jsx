@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import axios from "axios";
+import api from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Upload, Download, TrendingUp, TrendingDown, AlertCircle, BarChart3, FileWarning } from "lucide-react";
 import { toast } from "sonner";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -27,11 +25,11 @@ export default function Dashboard() {
       if (search.trim()) params.search = search.trim();
 
       const [statsRes, attentionRes, stagesRes, periodsRes, entitiesRes] = await Promise.all([
-        axios.get(`${API}/dashboard/stats`, { params }),
-        axios.get(`${API}/dashboard/attention`, { params }),
-        axios.get(`${API}/dashboard/stages`, { params }),
-        axios.get(`${API}/periods`),
-        axios.get(`${API}/legal-entities`),
+        api.get(`/dashboard/stats`, { params }),
+        api.get(`/dashboard/attention`, { params }),
+        api.get(`/dashboard/stages`, { params }),
+        api.get(`/periods`),
+        api.get(`/legal-entities`),
       ]);
       setStats(statsRes.data);
       setAttention(attentionRes.data);
@@ -50,7 +48,7 @@ export default function Dashboard() {
 
   const handleSeed = async () => {
     try {
-      await axios.post(`${API}/seed`);
+      await api.post(`/seed`);
       toast.success("Тестовые данные загружены");
       fetchData();
     } catch (e) {
@@ -64,7 +62,7 @@ export default function Dashboard() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await axios.post(`${API}/acts/upload`, formData);
+      const res = await api.post(`/acts/upload`, formData);
       toast.success(res.data.message);
       fetchData();
     } catch (err) {
@@ -75,7 +73,7 @@ export default function Dashboard() {
 
   const handleExport = async () => {
     try {
-      const res = await axios.get(`${API}/acts/export/json`);
+      const res = await api.get(`/acts/export/json`);
       const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -91,7 +89,7 @@ export default function Dashboard() {
 
   const handleDownloadSamples = async () => {
     try {
-      const res = await axios.get(`${API}/acts/samples`, { responseType: "blob" });
+      const res = await api.get(`/acts/samples`, { responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url;
@@ -168,9 +166,9 @@ export default function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="kpi-cards">
         <StatCard label="Всего актов в цикле" value={stats.total_acts} trend={5} />
-        <StatCard label="Готово к отправке" value={stats.ready_to_send} trend={2} color="emerald" />
+        <StatCard label="Загружено" value={stats.ready_to_send} trend={2} color="emerald" />
         <StatCard label="Отправлено / ждём ответ" value={stats.sent_waiting} trend={-3} />
-        <StatCard label="Подписано" value={stats.signed} trend={12} color="emerald" />
+        <StatCard label="Получен подписанный" value={stats.signed} trend={12} color="emerald" />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Просрочено" value={stats.overdue} trend={-8} color="red" />

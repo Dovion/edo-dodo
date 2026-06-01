@@ -1,5 +1,11 @@
 server:
   port: 8080
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      timeout: 24h
+      cookie:
+        same-site: lax
 
 spring:
   application:
@@ -16,6 +22,12 @@ spring:
     property-naming-strategy: SNAKE_CASE
 
 app:
+  security:
+    admin:
+      username: admin
+      password: 12345
+    # Куда вести после входа: / для Docker/nginx, http://localhost:3000 для npm start
+    login-success-url: ${APP_LOGIN_SUCCESS_URL:http://localhost:3000/}
   cors:
     allowed-origins: http://localhost:3000,http://localhost,http://localhost:80
   storage:

@@ -1,12 +1,10 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertCircle, Clock, Send } from "lucide-react";
+import { AlertCircle, Clock, Send, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const STATUS_COLORS = {
   "Нет ответа": "bg-red-100 text-red-700 border-red-200",
@@ -20,8 +18,8 @@ export default function Exceptions() {
   const fetchExceptions = async () => {
     try {
       const [noResponse, corrections] = await Promise.all([
-        axios.get(`${API}/acts`, { params: { status: "Нет ответа", limit: 100 } }),
-        axios.get(`${API}/acts`, { params: { status: "Корректировки", limit: 100 } }),
+        api.get(`/acts`, { params: { status: "Нет ответа", limit: 100 } }),
+        api.get(`/acts`, { params: { status: "Корректировки", limit: 100 } }),
       ]);
       setActs([...noResponse.data.acts, ...corrections.data.acts]);
     } catch (e) {
@@ -35,7 +33,7 @@ export default function Exceptions() {
 
   const escalateToAccounting = async (actId) => {
     try {
-      await axios.patch(`${API}/acts/${actId}/status`, { status: "В работе бухгалтерии", comment: "Эскалировано из очереди исключений" });
+      await api.patch(`/acts/${actId}/status`, { status: "В работе бухгалтерии", comment: "Эскалировано из очереди проблемных кейсов" });
       toast.success("Передано в бухгалтерию");
       fetchExceptions();
     } catch (e) {
@@ -43,9 +41,19 @@ export default function Exceptions() {
     }
   };
 
+  const closeAct = async (actId) => {
+    try {
+      await api.patch(`/acts/${actId}/status`, { status: "Закрыт", comment: "Закрыт (контрагент в исключениях)" });
+      toast.success("Акт закрыт");
+      fetchExceptions();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Ошибка");
+    }
+  };
+
   const resend = async (actId) => {
     try {
-      await axios.patch(`${API}/acts/${actId}/status`, { status: "Готов к отправке", comment: "Подготовлено к повторной отправке" });
+      await api.patch(`/acts/${actId}/status`, { status: "Загружено", comment: "Подготовлено к повторной отправке" });
       toast.success("Подготовлено к повторной отправке");
       fetchExceptions();
     } catch (e) {
@@ -61,7 +69,7 @@ export default function Exceptions() {
   return (
     <div className="p-6 md:p-8 space-y-6" data-testid="exceptions-page">
       <h1 className="text-2xl font-bold tracking-tight text-slate-900" style={{ fontFamily: 'Manrope, sans-serif' }}>
-        Исключения и проблемные кейсы
+        Проблемные кейсы
       </h1>
 
       {/* No Response Section */}
@@ -91,14 +99,22 @@ export default function Exceptions() {
                   <TableCell className="text-sm font-medium">{new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(act.amount)}</TableCell>
                   <TableCell><Badge variant="outline" className={STATUS_COLORS[act.status]}>{act.status}</Badge></TableCell>
                   <TableCell>
-                    <div className="flex gap-1">
-                      <Button variant="outline" size="sm" onClick={() => escalateToAccounting(act.id)} data-testid={`escalate-btn-${act.id}`}>
-                        <AlertCircle size={12} className="mr-1" />В бухгалтерию
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => resend(act.id)} data-testid={`resend-btn-${act.id}`}>
-                        <Send size={12} className="mr-1" />Повторить
-                      </Button>
-                    </div>
+                    {act.counterparty_exception ? (
+                      act.status !== "Закрыт" && (
+                        <Button variant="outline" size="sm" onClick={() => closeAct(act.id)} data-testid={`close-btn-${act.id}`}>
+                          <CheckCircle size={12} className="mr-1" />Закрыть
+                        </Button>
+                      )
+                    ) : (
+                      <div className="flex gap-1">
+                        <Button variant="outline" size="sm" onClick={() => escalateToAccounting(act.id)} data-testid={`escalate-btn-${act.id}`}>
+                          <AlertCircle size={12} className="mr-1" />В бухгалтерию
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => resend(act.id)} data-testid={`resend-btn-${act.id}`}>
+                          <Send size={12} className="mr-1" />Повторить
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -137,14 +153,22 @@ export default function Exceptions() {
                   <TableCell className="text-sm font-medium">{new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(act.amount)}</TableCell>
                   <TableCell><Badge variant="outline" className={STATUS_COLORS[act.status]}>{act.status}</Badge></TableCell>
                   <TableCell>
-                    <div className="flex gap-1">
-                      <Button variant="outline" size="sm" onClick={() => escalateToAccounting(act.id)} data-testid={`escalate-correction-${act.id}`}>
-                        <AlertCircle size={12} className="mr-1" />В бухгалтерию
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => resend(act.id)} data-testid={`resend-correction-${act.id}`}>
-                        <Send size={12} className="mr-1" />Повторить
-                      </Button>
-                    </div>
+                    {act.counterparty_exception ? (
+                      act.status !== "Закрыт" && (
+                        <Button variant="outline" size="sm" onClick={() => closeAct(act.id)} data-testid={`close-correction-${act.id}`}>
+                          <CheckCircle size={12} className="mr-1" />Закрыть
+                        </Button>
+                      )
+                    ) : (
+                      <div className="flex gap-1">
+                        <Button variant="outline" size="sm" onClick={() => escalateToAccounting(act.id)} data-testid={`escalate-correction-${act.id}`}>
+                          <AlertCircle size={12} className="mr-1" />В бухгалтерию
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => resend(act.id)} data-testid={`resend-correction-${act.id}`}>
+                          <Send size={12} className="mr-1" />Повторить
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

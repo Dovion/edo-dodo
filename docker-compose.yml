@@ -8,6 +8,8 @@ services:
     environment:
       - MONGO_URL=mongodb://mongo:27017/edo_dodo
       - APP_UPLOADS_DIR=/app/uploads  # ← Путь ВНУТРИ контейнера
+      - APP_ADMIN_PASSWORD=${APP_ADMIN_PASSWORD}
+      - APP_LOGIN_SUCCESS_URL=${APP_LOGIN_SUCCESS_URL:-/}
     volumes:
       - uploads:/app/uploads
 

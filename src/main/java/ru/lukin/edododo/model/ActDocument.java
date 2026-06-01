@@ -1,6 +1,7 @@
 package ru.lukin.edododo.model;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Transient;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
@@ -51,6 +52,9 @@ public class ActDocument {
     private Instant updatedAt;
 
     private List<HistoryEntry> history = new ArrayList<>();
+
+    @Transient
+    private Boolean counterpartyException;
 
     public ActDocument() {
     }
@@ -148,4 +152,7 @@ public class ActDocument {
 
     public List<HistoryEntry> getHistory() { return history; }
     public void setHistory(List<HistoryEntry> history) { this.history = history; }
+
+    public Boolean getCounterpartyException() { return counterpartyException; }
+    public void setCounterpartyException(Boolean counterpartyException) { this.counterpartyException = counterpartyException; }
 }

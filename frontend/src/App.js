@@ -1,12 +1,14 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Layout from "@/components/Layout";
+import RequireAuth from "@/components/RequireAuth";
 import Dashboard from "@/pages/Dashboard";
 import ActsRegistry from "@/pages/ActsRegistry";
 import Exceptions from "@/pages/Exceptions";
 import AccountingQueue from "@/pages/AccountingQueue";
 import Counterparties from "@/pages/Counterparties";
 import Settings from "@/pages/Settings";
+import Login from "@/pages/Login";
 import { Toaster } from "@/components/ui/sonner";
 
 function App() {
@@ -14,13 +16,16 @@ function App() {
     <div className="App">
       <BrowserRouter>
         <Routes>
-          <Route element={<Layout />}>
+          <Route path="/login" element={<Login />} />
+          <Route element={<RequireAuth />}>
+            <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/acts" element={<ActsRegistry />} />
             <Route path="/exceptions" element={<Exceptions />} />
             <Route path="/accounting" element={<AccountingQueue />} />
             <Route path="/counterparties" element={<Counterparties />} />
             <Route path="/settings" element={<Settings />} />
+            </Route>
           </Route>
         </Routes>
       </BrowserRouter>

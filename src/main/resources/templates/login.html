@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Вход — EDO Dodo</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: "Segoe UI", system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #f8fafc;
+        }
+        .card {
+            width: 100%;
+            max-width: 400px;
+            padding: 2rem;
+            background: #fff;
+            color: #0f172a;
+            border-radius: 12px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+        }
+        h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+        p.subtitle { margin: 0 0 1.5rem; color: #64748b; font-size: 0.9rem; }
+        label { display: block; margin-bottom: 0.35rem; font-size: 0.875rem; font-weight: 500; }
+        input {
+            width: 100%;
+            padding: 0.65rem 0.75rem;
+            margin-bottom: 1rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+        input:focus { outline: 2px solid #f97316; border-color: #f97316; }
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            border: none;
+            border-radius: 8px;
+            background: #ea580c;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button:hover { background: #c2410c; }
+        .alert {
+            padding: 0.65rem 0.75rem;
+            margin-bottom: 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+        }
+        .alert-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+        .alert-info { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>EDO Dodo</h1>
+    <p class="subtitle">Войдите в систему</p>
+
+    <div th:if="${param.error}" class="alert alert-error">
+        Неверный логин или пароль.
+    </div>
+    <div th:if="${param.logout}" class="alert alert-info">
+        Вы вышли из системы.
+    </div>
+
+    <form th:action="@{/login}" method="post">
+        <input type="hidden" th:name="${csrfParameterName}" th:value="${csrfToken}"/>
+        <label for="username">Логин</label>
+        <input id="username" name="username" type="text" autocomplete="username" required autofocus/>
+        <label for="password">Пароль</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required/>
+        <button type="submit">Войти</button>
+    </form>
+</div>
+</body>
+</html>

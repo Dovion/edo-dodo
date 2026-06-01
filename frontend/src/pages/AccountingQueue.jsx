@@ -1,12 +1,10 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { CheckCircle, Send } from "lucide-react";
 import { toast } from "sonner";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export default function AccountingQueue() {
   const [acts, setActs] = useState([]);
@@ -16,8 +14,8 @@ export default function AccountingQueue() {
   const fetchData = async () => {
     try {
       const [accounting, signed] = await Promise.all([
-        axios.get(`${API}/acts`, { params: { status: "В работе бухгалтерии", limit: 100 } }),
-        axios.get(`${API}/acts`, { params: { status: "Подписан", limit: 100 } }),
+        api.get(`/acts`, { params: { status: "В работе бухгалтерии", limit: 100 } }),
+        api.get(`/acts`, { params: { status: "Получен подписанный", limit: 100 } }),
       ]);
       setActs(accounting.data.acts);
       setSignedActs(signed.data.acts);
@@ -32,7 +30,7 @@ export default function AccountingQueue() {
 
   const closeAct = async (actId) => {
     try {
-      await axios.patch(`${API}/acts/${actId}/status`, { status: "Закрыт", comment: "Закрыт бухгалтером" });
+      await api.patch(`/acts/${actId}/status`, { status: "Закрыт", comment: "Закрыт бухгалтером" });
       toast.success("Акт закрыт");
       fetchData();
     } catch (e) {
@@ -42,7 +40,7 @@ export default function AccountingQueue() {
 
   const prepareResend = async (actId) => {
     try {
-      await axios.patch(`${API}/acts/${actId}/status`, { status: "Готов к отправке", comment: "Подготовлено к повторной отправке после работы бухгалтерии" });
+      await api.patch(`/acts/${actId}/status`, { status: "Загружено", comment: "Подготовлено к повторной отправке после работы бухгалтерии" });
       toast.success("Подготовлено к повторной отправке");
       fetchData();
     } catch (e) {
@@ -62,7 +60,7 @@ export default function AccountingQueue() {
       <div className="space-y-3" data-testid="signed-section">
         <div className="flex items-center gap-2">
           <CheckCircle size={18} className="text-emerald-500" />
-          <h2 className="text-lg font-semibold text-slate-800">Подписаны — готовы к закрытию ({signedActs.length})</h2>
+          <h2 className="text-lg font-semibold text-slate-800">Получен подписанный — готовы к закрытию ({signedActs.length})</h2>
         </div>
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <Table>
@@ -130,9 +128,11 @@ export default function AccountingQueue() {
                       <Button variant="outline" size="sm" onClick={() => closeAct(act.id)} data-testid={`close-work-btn-${act.id}`}>
                         <CheckCircle size={12} className="mr-1" />Закрыть
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => prepareResend(act.id)} data-testid={`resend-work-btn-${act.id}`}>
-                        <Send size={12} className="mr-1" />Повторить
-                      </Button>
+                      {!act.counterparty_exception && (
+                        <Button variant="outline" size="sm" onClick={() => prepareResend(act.id)} data-testid={`resend-work-btn-${act.id}`}>
+                          <Send size={12} className="mr-1" />Повторить
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

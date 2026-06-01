@@ -4,7 +4,7 @@ import { LayoutDashboard, FileText, AlertCircle, Clock, Users, Settings } from "
 const navItems = [
   { path: "/", label: "Дашборд", icon: LayoutDashboard },
   { path: "/acts", label: "Акты сверки", icon: FileText },
-  { path: "/exceptions", label: "Исключения", icon: AlertCircle },
+  { path: "/exceptions", label: "Проблемные кейсы", icon: AlertCircle },
   { path: "/accounting", label: "Очередь бухгалтерии", icon: Clock },
   { path: "/counterparties", label: "Контрагенты", icon: Users },
   { path: "/settings", label: "Настройки", icon: Settings },

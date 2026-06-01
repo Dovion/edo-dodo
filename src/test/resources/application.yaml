@@ -1,0 +1,5 @@
+app:
+  security:
+    admin:
+      username: admin
+      password: test-password

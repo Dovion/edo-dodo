@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import api from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,6 @@ import { Separator } from "@/components/ui/separator";
 import { Settings as SettingsIcon, CheckCircle2, Loader2, LogIn, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-
 export default function Settings() {
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({ mode: "mock", api_url: "", api_token: "", org_inn: "" });
@@ -21,7 +19,7 @@ export default function Settings() {
 
   const fetchSettings = async () => {
     try {
-      const res = await axios.get(`${API}/settings/saby`);
+      const res = await api.get(`/settings/saby`);
       setSettings(res.data);
       setForm({
         mode: res.data.mode || "mock",
@@ -44,7 +42,7 @@ export default function Settings() {
       if (payload.api_token.startsWith("••")) {
         delete payload.api_token;
       }
-      const res = await axios.put(`${API}/settings/saby`, payload);
+      const res = await api.put(`/settings/saby`, payload);
       setSettings(res.data);
       setForm({
         mode: res.data.mode,
@@ -67,7 +65,7 @@ export default function Settings() {
     }
     setAuthenticating(true);
     try {
-      const res = await axios.post(`${API}/settings/saby/auth`, authForm);
+      const res = await api.post(`/settings/saby/auth`, authForm);
       if (res.data.success) {
         toast.success(res.data.message);
         setAuthForm({ login: "", password: "", account_number: "" });
@@ -266,24 +264,25 @@ export default function Settings() {
         <p className="text-sm text-slate-500">Жизненный цикл акта сверки в системе:</p>
         <div className="flex flex-wrap gap-2 items-center">
           {[
-            { name: "Готов к отправке", color: "bg-blue-100 text-blue-700" },
-            { name: "Отправлен", color: "bg-amber-100 text-amber-700" },
-            { name: "Подписан", color: "bg-emerald-100 text-emerald-700" },
+            { name: "Загружено", color: "bg-blue-100 text-blue-700" },
+            { name: "Отправлено в СБИС", color: "bg-amber-100 text-amber-700" },
+            { name: "Отправлено Контрагенту", color: "bg-sky-100 text-sky-700" },
+            { name: "Получен подписанный", color: "bg-emerald-100 text-emerald-700" },
             { name: "Нет ответа", color: "bg-red-100 text-red-700" },
             { name: "Корректировки", color: "bg-orange-100 text-orange-700" },
             { name: "В работе бухгалтерии", color: "bg-purple-100 text-purple-700" },
             { name: "Закрыт", color: "bg-slate-100 text-slate-700" },
-          ].map((s, i) => (
+          ].map((s, i, arr) => (
             <div key={i} className="flex items-center gap-1">
               <Badge variant="outline" className={`${s.color} border-transparent`}>{s.name}</Badge>
-              {i < 6 && <span className="text-slate-300 mx-1">→</span>}
+              {i < arr.length - 1 && <span className="text-slate-300 mx-1">→</span>}
             </div>
           ))}
         </div>
         <div className="text-sm text-slate-600 space-y-1 mt-3">
-          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-emerald-500 mt-0.5 flex-shrink-0" /> Успешный кейс: Готов к отправке → Отправлен → Подписан → Закрыт</p>
-          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-amber-500 mt-0.5 flex-shrink-0" /> Нет ответа: Отправлен → Нет ответа → (эскалация в бухгалтерию или повторная отправка)</p>
-          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-orange-500 mt-0.5 flex-shrink-0" /> Корректировки: Отправлен → Корректировки → В работе бухгалтерии → Готов к отправке (повтор)</p>
+          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-emerald-500 mt-0.5 flex-shrink-0" /> Успешный кейс: Загружено → Отправлено в СБИС → Отправлено Контрагенту → Получен подписанный → Закрыт</p>
+          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-amber-500 mt-0.5 flex-shrink-0" /> Нет ответа: после отправки в СБИС/контрагенту → Нет ответа → эскалация или повторная отправка</p>
+          <p className="flex items-start gap-2"><CheckCircle2 size={14} className="text-orange-500 mt-0.5 flex-shrink-0" /> Корректировки: Отправлено в СБИС → Корректировки → В работе бухгалтерии → Загружено (повтор)</p>
         </div>
       </Card>
     </div>

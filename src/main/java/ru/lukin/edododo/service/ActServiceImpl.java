@@ -19,6 +19,7 @@ import ru.lukin.edododo.dto.StatusUpdateRequest;
 import ru.lukin.edododo.exception.BadRequestException;
 import ru.lukin.edododo.exception.ResourceNotFoundException;
 import ru.lukin.edododo.model.ActDocument;
+import ru.lukin.edododo.model.ActStatus;
 import ru.lukin.edododo.model.FileDocument;
 import ru.lukin.edododo.model.HistoryEntry;
 import ru.lukin.edododo.repository.ActRepository;
@@ -47,21 +48,16 @@ import static org.springframework.data.mongodb.core.aggregation.Aggregation.*;
 @Service
 public class ActServiceImpl implements ActService {
 
-    private static final List<String> VALID_STATUSES = List.of(
-            "Готов к отправке",
-            "Отправлен",
-            "Подписан",
-            "Нет ответа",
-            "Корректировки",
-            "В работе бухгалтерии",
-            "Закрыт"
-    );
+    private static final List<String> VALID_STATUSES = Arrays.stream(ActStatus.values())
+            .map(ActStatus::getDisplayName)
+            .toList();
 
     private final ActRepository actRepository;
     private final FileRepository fileRepository;
     private final SabyService sabyService;
     private final MongoTemplate mongoTemplate;
     private final ObjectMapper objectMapper;
+    private final CounterpartyExceptionService counterpartyExceptionService;
     @Value("${app.uploads-dir:uploads}")
     private String uploadsDir;
     public ActServiceImpl(
@@ -69,13 +65,23 @@ public class ActServiceImpl implements ActService {
             FileRepository fileRepository,
             SabyService sabyService,
             MongoTemplate mongoTemplate,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            CounterpartyExceptionService counterpartyExceptionService
     ) {
         this.actRepository = actRepository;
         this.fileRepository = fileRepository;
         this.sabyService = sabyService;
         this.mongoTemplate = mongoTemplate;
         this.objectMapper = objectMapper;
+        this.counterpartyExceptionService = counterpartyExceptionService;
+    }
+
+    private void enrichExceptionFlag(ActDocument act) {
+        act.setCounterpartyException(counterpartyExceptionService.isException(act));
+    }
+
+    private void enrichExceptionFlags(List<ActDocument> acts) {
+        acts.forEach(this::enrichExceptionFlag);
     }
 
     private Criteria buildCriteria(String period, String legalEntity, String search) {
@@ -114,9 +120,11 @@ public class ActServiceImpl implements ActService {
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("total_acts", total);
-        stats.put("ready_to_send", statusCounts.getOrDefault("Готов к отправке", 0L));
-        stats.put("sent_waiting", statusCounts.getOrDefault("Отправлен", 0L) + statusCounts.getOrDefault("Нет ответа", 0L));
-        stats.put("signed", statusCounts.getOrDefault("Подписан", 0L));
+        stats.put("ready_to_send", statusCounts.getOrDefault("Загружено", 0L));
+        stats.put("sent_waiting", statusCounts.getOrDefault("Отправлено в СБИС", 0L)
+                + statusCounts.getOrDefault("Отправлено Контрагенту", 0L)
+                + statusCounts.getOrDefault("Нет ответа", 0L));
+        stats.put("signed", statusCounts.getOrDefault("Получен подписанный", 0L));
         stats.put("overdue", statusCounts.getOrDefault("Нет ответа", 0L));
         stats.put("corrections", statusCounts.getOrDefault("Корректировки", 0L));
         stats.put("escalated", statusCounts.getOrDefault("В работе бухгалтерии", 0L));
@@ -134,7 +142,7 @@ public class ActServiceImpl implements ActService {
         long noResponseCount = mongoTemplate.count(org.springframework.data.mongodb.core.query.Query.query(noRespCriteria), "acts");
 
         // 2. Large tail counterparties
-        Criteria largeTailCriteria = new Criteria().andOperator(base, Criteria.where("status").nin("Закрыт", "Подписан"));
+        Criteria largeTailCriteria = new Criteria().andOperator(base, Criteria.where("status").nin("Закрыт", "Получен подписанный"));
         Aggregation largeTailAgg = newAggregation(
                 match(largeTailCriteria),
                 group("counterparty").sum("amount").as("total"),
@@ -182,14 +190,14 @@ public class ActServiceImpl implements ActService {
     public List<Map<String, Object>> getProcessStages(String period, String legalEntity, String search) {
         Map<String, Object> stats = getDashboardStats(period, legalEntity, search);
         Map<String, Long> breakdown = (Map<String, Long>) stats.get("status_breakdown");
-        long total = ((Number) stats.get("total_acts")).longValue();
 
         List<Map<String, Object>> stages = new ArrayList<>();
-        stages.add(Map.of("name", "Загружено", "count", total));
-        stages.add(Map.of("name", "Готово к отправке", "count", breakdown.getOrDefault("Готов к отправке", 0L)));
-        stages.add(Map.of("name", "Отправлено", "count", breakdown.getOrDefault("Отправлен", 0L) + breakdown.getOrDefault("Нет ответа", 0L)));
-        stages.add(Map.of("name", "Ждём ответ", "count", breakdown.getOrDefault("Нет ответа", 0L) + breakdown.getOrDefault("Отправлен", 0L)));
-        stages.add(Map.of("name", "Подписано", "count", breakdown.getOrDefault("Подписан", 0L)));
+        stages.add(Map.of("name", "Загружено", "count", breakdown.getOrDefault("Загружено", 0L)));
+        stages.add(Map.of("name", "Отправлено в СБИС", "count", breakdown.getOrDefault("Отправлено в СБИС", 0L)));
+        stages.add(Map.of("name", "Отправлено Контрагенту", "count", breakdown.getOrDefault("Отправлено Контрагенту", 0L)));
+        stages.add(Map.of("name", "Ждём ответ", "count", breakdown.getOrDefault("Нет ответа", 0L)
+                + breakdown.getOrDefault("Отправлено в СБИС", 0L) + breakdown.getOrDefault("Отправлено Контрагенту", 0L)));
+        stages.add(Map.of("name", "Получен подписанный", "count", breakdown.getOrDefault("Получен подписанный", 0L)));
         stages.add(Map.of("name", "Закрыто", "count", breakdown.getOrDefault("Закрыт", 0L)));
         return stages;
     }
@@ -220,6 +228,7 @@ public class ActServiceImpl implements ActService {
         query.limit(limit);
 
         List<ActDocument> acts = mongoTemplate.find(query, ActDocument.class);
+        enrichExceptionFlags(acts);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("acts", acts);
@@ -245,8 +254,10 @@ public class ActServiceImpl implements ActService {
 
     @Override
     public ActDocument getActById(String actId) {
-        return actRepository.findById(actId)
+        ActDocument act = actRepository.findById(actId)
                 .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+        enrichExceptionFlag(act);
+        return act;
     }
 
     @Override
@@ -255,7 +266,15 @@ public class ActServiceImpl implements ActService {
             throw new BadRequestException("Недопустимый статус. Допустимые: " + VALID_STATUSES);
         }
 
-        ActDocument act = getActById(actId);
+        ActDocument act = actRepository.findById(actId)
+                .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+        if (counterpartyExceptionService.isException(act)) {
+            String closed = ActStatus.ЗАКРЫТ.getDisplayName();
+            if (!closed.equals(request.getStatus())) {
+                throw new BadRequestException(
+                        "Для контрагента в исключениях доступен только переход в статус «Закрыт»");
+            }
+        }
         var prevStatus = act.getStatus();
         act.setStatus(request.getStatus());
         act.setUpdatedAt(Instant.now());
@@ -265,14 +284,20 @@ public class ActServiceImpl implements ActService {
                 request.getStatus(),
                 request.getComment() == null ? "" : request.getComment()
         ));
-        return actRepository.save(act);
+        ActDocument saved = actRepository.save(act);
+        enrichExceptionFlag(saved);
+        return saved;
     }
 
     @Override
     public Map<String, Object> sendToSaby(String actId, String documentType) {
-        ActDocument act = getActById(actId);
-        if (!"Готов к отправке".equals(act.getStatus())) {
-            throw new BadRequestException("Акт должен быть в статусе 'Готов к отправке'");
+        ActDocument act = actRepository.findById(actId)
+                .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+        if (counterpartyExceptionService.isException(act)) {
+            throw new BadRequestException("Контрагент в списке исключений — отправка в СБИС недоступна");
+        }
+        if (!ActStatus.ЗАГРУЖЕНО.getDisplayName().equals(act.getStatus())) {
+            throw new BadRequestException("Акт должен быть в статусе '" + ActStatus.ЗАГРУЖЕНО.getDisplayName() + "'");
         }
 
         Map<String, Object> sabyResponse = sabyService.sendActToSaby(act);
@@ -283,18 +308,19 @@ public class ActServiceImpl implements ActService {
         String sabySendId = String.valueOf(sabyResponse.get("document_id"));
         String oldStatus = act.getStatus();
 
-        act.setStatus("Отправлен");
+        act.setStatus(ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName());
         act.setSabySendId(sabySendId);
         act.setSabyResponse(toJsonString(sabyResponse));
         act.setUpdatedAt(Instant.now());
         act.getHistory().add(new HistoryEntry(
                 Instant.now(),
                 oldStatus,
-                "Отправлен",
+                ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName(),
                 "Отправлено в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
         ));
 
         ActDocument saved = actRepository.save(act);
+        enrichExceptionFlag(saved);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("act", saved);
@@ -304,8 +330,14 @@ public class ActServiceImpl implements ActService {
 
     @Override
     public Map<String, Object> sendBatchToSaby() {
-        List<ActDocument> acts = actRepository.findAll().stream()
-                .filter(a -> "Готов к отправке".equals(a.getStatus()))
+        List<ActDocument> loadedActs = actRepository.findAll().stream()
+                .filter(a -> ActStatus.ЗАГРУЖЕНО.getDisplayName().equals(a.getStatus()))
+                .toList();
+        int skippedExceptions = (int) loadedActs.stream()
+                .filter(counterpartyExceptionService::isException)
+                .count();
+        List<ActDocument> acts = loadedActs.stream()
+                .filter(a -> !counterpartyExceptionService.isException(a))
                 .toList();
 
         int sentCount = 0;
@@ -319,23 +351,26 @@ public class ActServiceImpl implements ActService {
             }
 
             String sabySendId = String.valueOf(sabyResponse.get("document_id"));
-            act.setStatus("Отправлен");
+            act.setStatus(ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName());
             act.setSabySendId(sabySendId);
             act.setSabyResponse(toJsonString(sabyResponse));
             act.setUpdatedAt(Instant.now());
             act.getHistory().add(new HistoryEntry(
                     Instant.now(),
-                    "Готов к отправке",
-                    "Отправлен",
+                    ActStatus.ЗАГРУЖЕНО.getDisplayName(),
+                    ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName(),
                     "Массовая отправка в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
             ));
             actRepository.save(act);
             sentCount++;
         }
 
-        String message = "Отправлено " + sentCount + " актов в СБИС" + (errors.isEmpty() ? "" : " (ошибок: " + errors.size() + ")");
+        String message = "Отправлено " + sentCount + " актов в СБИС"
+                + (errors.isEmpty() ? "" : " (ошибок: " + errors.size() + ")")
+                + (skippedExceptions == 0 ? "" : " (пропущено исключений: " + skippedExceptions + ")");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sent_count", sentCount);
+        result.put("skipped_exceptions", skippedExceptions);
         result.put("errors", errors);
         result.put("message", message);
         return result;
@@ -580,10 +615,10 @@ public class ActServiceImpl implements ActService {
                     }
                 }
 
-                act.setStatus("Готов к отправке");
+                act.setStatus(ActStatus.ЗАГРУЖЕНО.getDisplayName());
                 act.setCreatedAt(Instant.now());
                 act.setUpdatedAt(Instant.now());
-                act.setHistory(List.of(new HistoryEntry(Instant.now(), "", "Готов к отправке", "Загружено из файла")));
+                act.setHistory(List.of(new HistoryEntry(Instant.now(), "", ActStatus.ЗАГРУЖЕНО.getDisplayName(), "Загружено из файла")));
                 created.add(act);
             }
 
@@ -759,24 +794,35 @@ public class ActServiceImpl implements ActService {
         List<String> periods = List.of("1 квартал 2026", "2 квартал 2026");
 
         // ✅ РЕАЛИСТИЧНАЯ ЦЕПочка статусов
+        String uploaded = ActStatus.ЗАГРУЖЕНО.getDisplayName();
+        String sentSbis = ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName();
+        String sentCounterparty = ActStatus.ОТПРАВЛЕНО_КОНТРАГЕНТУ.getDisplayName();
+        String signedReceived = ActStatus.ПОЛУЧЕН_ПОДПИСАННЫЙ.getDisplayName();
+        String noResponse = ActStatus.НЕТ_ОТВЕТА.getDisplayName();
+        String corrections = ActStatus.КОРРЕКТИРОВКИ.getDisplayName();
+        String accounting = ActStatus.В_РАБОТЕ_БУХГАЛТЕРИИ.getDisplayName();
+        String closed = ActStatus.ЗАКРЫТ.getDisplayName();
+
         Map<String, List<String>> statusHistory = Map.of(
-                "Готов к отправке", List.of(""),
-                "Отправлен", List.of("Готов к отправке", "Отправлен"),
-                "Нет ответа", List.of("Готов к отправке", "Отправлен", "Нет ответа"),
-                "Подписан", List.of("Готов к отправке", "Отправлен", "Подписан"),
-                "Корректировки", List.of("Готов к отправке", "Отправлен", "Корректировки"),
-                "В работе бухгалтерии", List.of("Готов к отправке", "Отправлен", "В работе бухгалтерии"),
-                "Закрыт", List.of("Готов к отправке", "Отправлен", "Подписан", "Закрыт")
+                uploaded, List.of(""),
+                sentSbis, List.of("", uploaded, sentSbis),
+                sentCounterparty, List.of("", uploaded, sentSbis, sentCounterparty),
+                noResponse, List.of("", uploaded, sentSbis, noResponse),
+                signedReceived, List.of("", uploaded, sentSbis, sentCounterparty, signedReceived),
+                corrections, List.of("", uploaded, sentSbis, corrections),
+                accounting, List.of("", uploaded, sentSbis, accounting),
+                closed, List.of("", uploaded, sentSbis, signedReceived, closed)
         );
 
         List<Map.Entry<String, Integer>> distribution = List.of(
-                Map.entry("Готов к отправке", 25),
-                Map.entry("Отправлен", 15),
-                Map.entry("Подписан", 20),
-                Map.entry("Нет ответа", 10),
-                Map.entry("Корректировки", 8),
-                Map.entry("В работе бухгалтерии", 12),
-                Map.entry("Закрыт", 30)
+                Map.entry(uploaded, 25),
+                Map.entry(sentSbis, 12),
+                Map.entry(sentCounterparty, 5),
+                Map.entry(signedReceived, 18),
+                Map.entry(noResponse, 10),
+                Map.entry(corrections, 8),
+                Map.entry(accounting, 12),
+                Map.entry(closed, 30)
         );
 
         List<ActDocument> acts = new ArrayList<>();
@@ -826,9 +872,8 @@ public class ActServiceImpl implements ActService {
                 }
                 act.setHistory(history);
 
-                // ✅ SabySendId для "Отправлен" и дальше
-                if ("Отправлен".equals(targetStatus) ||
-                        Arrays.asList("Нет ответа", "Подписан", "Закрыт", "Корректировки", "В работе бухгалтерии").contains(targetStatus)) {
+                if (sentSbis.equals(targetStatus) || sentCounterparty.equals(targetStatus)
+                        || Arrays.asList(noResponse, signedReceived, closed, corrections, accounting).contains(targetStatus)) {
                     act.setSabySendId("SABY-" + randomHexString(12));
                 }
 
@@ -841,15 +886,28 @@ public class ActServiceImpl implements ActService {
     }
 
     private String getStatusComment(String status) {
-        return switch (status) {
-            case "Отправлен" -> "Отправлено в СБИС";
-            case "Подписан" -> "Подписано контрагентом";
-            case "Нет ответа" -> "Превышен срок ответа";
-            case "Закрыт" -> "Цикл сверки завершён";
-            case "Корректировки" -> "Требуются корректировки";
-            case "В работе бухгалтерии" -> "Эскалация в бухгалтерию";
-            default -> "Смена статуса";
-        };
+        if (ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName().equals(status)) {
+            return "Отправлено в СБИС (без подписания)";
+        }
+        if (ActStatus.ОТПРАВЛЕНО_КОНТРАГЕНТУ.getDisplayName().equals(status)) {
+            return "Отправлено контрагенту";
+        }
+        if (ActStatus.ПОЛУЧЕН_ПОДПИСАННЫЙ.getDisplayName().equals(status)) {
+            return "Получен подписанный документ из СБИС";
+        }
+        if (ActStatus.НЕТ_ОТВЕТА.getDisplayName().equals(status)) {
+            return "Превышен срок ответа";
+        }
+        if (ActStatus.ЗАКРЫТ.getDisplayName().equals(status)) {
+            return "Цикл сверки завершён";
+        }
+        if (ActStatus.КОРРЕКТИРОВКИ.getDisplayName().equals(status)) {
+            return "Требуются корректировки";
+        }
+        if (ActStatus.В_РАБОТЕ_БУХГАЛТЕРИИ.getDisplayName().equals(status)) {
+            return "Эскалация в бухгалтерию";
+        }
+        return "Смена статуса";
     }
 
     private String firstNonBlank(Map<String, String> row, String... keys) {
