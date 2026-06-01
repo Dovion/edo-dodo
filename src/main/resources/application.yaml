@@ -25,7 +25,7 @@ app:
   security:
     admin:
       username: admin
-      password: 12345
+      password: ${APP_ADMIN_PASSWORD}
     # Куда вести после входа: / для Docker/nginx, http://localhost:3000 для npm start
     login-success-url: ${APP_LOGIN_SUCCESS_URL:http://localhost:3000/}
   cors:
