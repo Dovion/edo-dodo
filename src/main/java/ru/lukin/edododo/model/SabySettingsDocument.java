@@ -4,6 +4,8 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 @Document(collection = "settings")
 public class SabySettingsDocument {
@@ -21,6 +23,7 @@ public class SabySettingsDocument {
     private String ourCompanyInn;
     private String ourCompanyKpp;
     private String ourCompanyName;
+    private List<SabyAccount> accounts = new ArrayList<>();
 
 
     public SabySettingsDocument() {
@@ -112,5 +115,13 @@ public class SabySettingsDocument {
 
     public void setOurCompanyName(String ourCompanyName) {
         this.ourCompanyName = ourCompanyName;
+    }
+
+    public List<SabyAccount> getAccounts() {
+        return accounts;
+    }
+
+    public void setAccounts(List<SabyAccount> accounts) {
+        this.accounts = accounts != null ? accounts : new ArrayList<>();
     }
 }

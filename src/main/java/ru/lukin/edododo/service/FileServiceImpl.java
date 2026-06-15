@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -103,5 +104,100 @@ public class FileServiceImpl implements FileService {
         FileDocument doc = getFileRecord(fileId);
         doc.setDeleted(true);
         fileRepository.save(doc);
+    }
+
+    @Override
+    public boolean saveActFileIfNew(String actId, String originalFilename, byte[] content, String contentType) {
+        if (originalFilename == null || originalFilename.isBlank() || content == null || content.length == 0) {
+            return false;
+        }
+
+        boolean exists = fileRepository.findByActIdAndDeletedFalse(actId).stream()
+                .anyMatch(f -> originalFilename.equalsIgnoreCase(f.getOriginalFilename()));
+        if (exists) {
+            return false;
+        }
+
+        actRepository.findById(actId)
+                .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+
+        try {
+            Path uploadPath = Paths.get(UPLOAD_BASE, "acts", actId, "sbis");
+            Files.createDirectories(uploadPath);
+
+            String safeName = originalFilename.replaceAll("[\\\\/:*?\"<>|]", "_");
+            String storedName = UUID.randomUUID() + "_" + safeName;
+            Path filePath = uploadPath.resolve(storedName);
+            Files.write(filePath, content);
+
+            FileDocument doc = new FileDocument();
+            doc.setId(storedName);
+            doc.setActId(actId);
+            doc.setStoragePath("acts/" + actId + "/sbis/" + storedName);
+            doc.setOriginalFilename(originalFilename);
+            doc.setContentType(contentType != null ? contentType : "application/octet-stream");
+            doc.setSize(content.length);
+            doc.setDeleted(false);
+            doc.setCreatedAt(Instant.now());
+            fileRepository.save(doc);
+            return true;
+        } catch (IOException e) {
+            throw new RuntimeException("Ошибка сохранения файла из СБИС: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean replaceActPdfFromSbis(String actId, byte[] content, String preferredFilename) {
+        if (content == null || content.length == 0) {
+            return false;
+        }
+
+        ActDocument act = actRepository.findById(actId)
+                .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
+
+        for (FileDocument pdf : fileRepository.findByActIdAndDeletedFalse(actId)) {
+            String name = pdf.getOriginalFilename();
+            if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+                pdf.setDeleted(true);
+                fileRepository.save(pdf);
+            }
+        }
+
+        try {
+            Path uploadPath = Paths.get(UPLOAD_BASE, "acts", actId);
+            Files.createDirectories(uploadPath);
+
+            String displayName = buildStampedPdfFilename(act, preferredFilename);
+            String storedName = UUID.randomUUID() + "_" + displayName.replaceAll("[\\\\/:*?\"<>|]", "_");
+            Path filePath = uploadPath.resolve(storedName);
+            Files.write(filePath, content);
+
+            FileDocument doc = new FileDocument();
+            doc.setId(storedName);
+            doc.setActId(actId);
+            doc.setStoragePath("acts/" + actId + "/" + storedName);
+            doc.setOriginalFilename(displayName);
+            doc.setContentType("application/pdf");
+            doc.setSize(content.length);
+            doc.setDeleted(false);
+            doc.setCreatedAt(Instant.now());
+            fileRepository.save(doc);
+
+            act.setFilePath(filePath.toString());
+            act.setUpdatedAt(Instant.now());
+            actRepository.save(act);
+            return true;
+        } catch (IOException e) {
+            throw new RuntimeException("Ошибка замены PDF из СБИС: " + e.getMessage(), e);
+        }
+    }
+
+    private String buildStampedPdfFilename(ActDocument act, String preferredFilename) {
+        if (preferredFilename != null && !preferredFilename.isBlank()
+                && preferredFilename.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            return preferredFilename.replaceAll("[\\\\/:*?\"<>|]", "_");
+        }
+        String actNumber = act.getActNumber() != null ? act.getActNumber() : act.getId();
+        return "Акт_" + actNumber + "_saby.pdf";
     }
 }

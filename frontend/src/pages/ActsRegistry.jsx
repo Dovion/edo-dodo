@@ -5,8 +5,10 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Send, Eye, ChevronLeft, ChevronRight, Upload, FileText, Trash2, Download, CheckCircle } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Send, Eye, ChevronLeft, ChevronRight, Upload, FileText, Trash2, Download, CheckCircle, UserCircle2 } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_COLORS = {
@@ -30,6 +32,15 @@ export default function ActsRegistry() {
   const [selectedAct, setSelectedAct] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [actFiles, setActFiles] = useState([]);
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+  const [sendMode, setSendMode] = useState("single");
+  const [pendingActId, setPendingActId] = useState(null);
+  const [sabyAccounts, setSabyAccounts] = useState([]);
+  const [selectedAccountId, setSelectedAccountId] = useState(null);
+  const [waitDays, setWaitDays] = useState(10);
+  const [defaultWaitDays, setDefaultWaitDays] = useState(10);
+  const [sending, setSending] = useState(false);
   const limit = 20;
 
   const fetchActs = useCallback(async () => {
@@ -51,12 +62,16 @@ export default function ActsRegistry() {
   useEffect(() => {
     const loadFilters = async () => {
       try {
-        const [p, e] = await Promise.all([
+        const [p, e, appSettings] = await Promise.all([
           api.get(`/periods`),
-          api.get(`/legal-entities`)
+          api.get(`/legal-entities`),
+          api.get(`/settings/app`),
         ]);
         setPeriods(p.data);
         setLegalEntities(e.data);
+        const days = appSettings.data.counterparty_response_wait_days ?? 10;
+        setDefaultWaitDays(days);
+        setWaitDays(days);
       } catch (err) { console.error(err); }
     };
     loadFilters();
@@ -64,13 +79,83 @@ export default function ActsRegistry() {
 
   useEffect(() => { fetchActs(); }, [fetchActs]);
 
-  const handleSendToSaby = async (actId) => {
+  const openSendDialog = async (mode, actId = null) => {
     try {
-      const res = await api.post(`/acts/${actId}/send-saby`, { document_type: "reconciliation_act" });
-      toast.success(`Отправлено в СБИС. ID: ${res.data.saby_response.document_id}`);
+      const res = await api.get(`/settings/saby`);
+      const accounts = (res.data.accounts || []).filter((account) => account.token_set);
+      if (accounts.length === 0) {
+        toast.error("Нет авторизованных учётных записей СБИС. Добавьте их в Настройках.");
+        return;
+      }
+
+      setSabyAccounts(accounts);
+      setSendMode(mode);
+      setPendingActId(actId);
+      setWaitDays(defaultWaitDays);
+
+      let defaultAccountId = accounts[0].id;
+      if (mode === "single" && actId) {
+        const act = acts.find((item) => item.id === actId);
+        if (act?.our_company_inn) {
+          const matched = accounts.find((account) => account.org_inn === act.our_company_inn);
+          if (matched) defaultAccountId = matched.id;
+        }
+      }
+      setSelectedAccountId(defaultAccountId);
+
+      if (accounts.length > 1) {
+        setAccountDialogOpen(true);
+      } else {
+        setSendDialogOpen(true);
+      }
+    } catch (e) {
+      toast.error("Не удалось загрузить учётные записи СБИС");
+    }
+  };
+
+  const handleAccountConfirm = () => {
+    if (!selectedAccountId) {
+      toast.error("Выберите учётную запись");
+      return;
+    }
+    setAccountDialogOpen(false);
+    setSendDialogOpen(true);
+  };
+
+  const handleConfirmSend = async () => {
+    if (!selectedAccountId) {
+      toast.error("Выберите учётную запись СБИС");
+      return;
+    }
+
+    const days = Number(waitDays);
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      toast.error("Укажите срок от 1 до 365 дней");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const payload = {
+        document_type: "reconciliation_act",
+        counterparty_response_wait_days: days,
+        saby_account_id: selectedAccountId,
+      };
+
+      if (sendMode === "single") {
+        const res = await api.post(`/acts/${pendingActId}/send-saby`, payload);
+        toast.success(`Отправлено в СБИС. ID: ${res.data.saby_response.document_id}`);
+      } else {
+        const res = await api.post(`/acts/send-batch`, payload);
+        toast.success(res.data.message);
+      }
+
+      setSendDialogOpen(false);
       fetchActs();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Ошибка отправки");
+    } finally {
+      setSending(false);
     }
   };
 
@@ -81,16 +166,6 @@ export default function ActsRegistry() {
       fetchActs();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Ошибка");
-    }
-  };
-
-  const handleBatchSend = async () => {
-    try {
-      const res = await api.post(`/acts/send-batch`);
-      toast.success(res.data.message);
-      fetchActs();
-    } catch (e) {
-      toast.error("Ошибка массовой отправки");
     }
   };
 
@@ -156,7 +231,7 @@ export default function ActsRegistry() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-900" style={{ fontFamily: 'Manrope, sans-serif' }}>
           Реестр актов сверки
         </h1>
-        <Button onClick={handleBatchSend} className="bg-emerald-600 hover:bg-emerald-700" data-testid="batch-send-button">
+        <Button onClick={() => openSendDialog("batch")} className="bg-emerald-600 hover:bg-emerald-700" data-testid="batch-send-button">
           <Send size={16} className="mr-2" />Отправить все загруженные
         </Button>
       </div>
@@ -246,7 +321,7 @@ export default function ActsRegistry() {
                       </Button>
                     )}
                     {!act.counterparty_exception && act.status === "Загружено" && (
-                      <Button variant="ghost" size="sm" onClick={() => handleSendToSaby(act.id)} data-testid={`send-btn-${act.id}`}>
+                      <Button variant="ghost" size="sm" onClick={() => openSendDialog("single", act.id)} data-testid={`send-btn-${act.id}`}>
                         <Send size={14} className="text-emerald-600" />
                       </Button>
                     )}
@@ -302,6 +377,12 @@ export default function ActsRegistry() {
                 {selectedAct.saby_send_id && (
                   <div className="sm:col-span-2 min-w-0 break-words"><span className="text-slate-500">СБИС ID:</span> <span className="font-mono text-emerald-600 break-all">{selectedAct.saby_send_id}</span></div>
                 )}
+                {selectedAct.counterparty_response_wait_days && (
+                  <div className="min-w-0 break-words"><span className="text-slate-500">Срок ответа:</span> {selectedAct.counterparty_response_wait_days} дн.</div>
+                )}
+                {selectedAct.counterparty_response_deadline && (
+                  <div className="min-w-0 break-words"><span className="text-slate-500">Дедлайн ответа:</span> {new Date(selectedAct.counterparty_response_deadline).toLocaleString("ru-RU")}</div>
+                )}
               </div>
               {selectedAct.history && selectedAct.history.length > 0 && (
                 <div>
@@ -354,6 +435,99 @@ export default function ActsRegistry() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Account picker Dialog */}
+      <Dialog open={accountDialogOpen} onOpenChange={setAccountDialogOpen}>
+        <DialogContent className="max-w-md" data-testid="account-picker-dialog">
+          <DialogHeader>
+            <DialogTitle>Выбор учётной записи СБИС</DialogTitle>
+            <DialogDescription>
+              {sendMode === "batch"
+                ? "Выберите кабинет, от имени которого будут отправлены все загруженные акты"
+                : "Выберите кабинет для подписания и отправки акта"}
+            </DialogDescription>
+          </DialogHeader>
+          <RadioGroup
+            value={selectedAccountId || ""}
+            onValueChange={setSelectedAccountId}
+            className="space-y-2 py-2"
+          >
+            {sabyAccounts.map((account) => (
+              <label
+                key={account.id}
+                htmlFor={`account-${account.id}`}
+                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                  selectedAccountId === account.id
+                    ? "border-blue-300 bg-blue-50"
+                    : "border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <RadioGroupItem value={account.id} id={`account-${account.id}`} className="mt-1" />
+                <div className="flex items-start gap-2 min-w-0">
+                  <UserCircle2 size={18} className="text-blue-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-800 truncate">
+                      {account.display_name || account.login}
+                    </p>
+                    <p className="text-xs text-slate-500">{account.login}</p>
+                  </div>
+                </div>
+              </label>
+            ))}
+          </RadioGroup>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccountDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={handleAccountConfirm} className="bg-blue-600 hover:bg-blue-700" data-testid="confirm-account-button">
+              Далее
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send to Saby Dialog */}
+      <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
+        <DialogContent className="max-w-md" data-testid="send-saby-dialog">
+          <DialogHeader>
+            <DialogTitle>Отправка контрагенту</DialogTitle>
+            <DialogDescription>
+              {sendMode === "batch"
+                ? "Укажите срок ожидания ответа для всех загруженных актов"
+                : "Укажите срок ожидания ответа контрагента"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="wait-days">Срок ожидания ответа (дней)</Label>
+            <Input
+              id="wait-days"
+              type="number"
+              min={1}
+              max={365}
+              value={waitDays}
+              onChange={(e) => setWaitDays(e.target.value)}
+              data-testid="wait-days-input"
+            />
+            <p className="text-xs text-slate-500">
+              По умолчанию — {defaultWaitDays} дн. Допустимый диапазон: 1–365 дней.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sending}>
+              Отмена
+            </Button>
+            <Button
+              onClick={handleConfirmSend}
+              disabled={sending}
+              className="bg-emerald-600 hover:bg-emerald-700"
+              data-testid="confirm-send-button"
+            >
+              <Send size={14} className="mr-2" />
+              {sending ? "Отправка..." : "Отправить"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

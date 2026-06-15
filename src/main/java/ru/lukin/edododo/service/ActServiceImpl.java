@@ -15,6 +15,7 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import ru.lukin.edododo.config.SabyAppProperties;
 import ru.lukin.edododo.dto.StatusUpdateRequest;
 import ru.lukin.edododo.exception.BadRequestException;
 import ru.lukin.edododo.exception.ResourceNotFoundException;
@@ -35,6 +36,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.IsoFields;
@@ -58,6 +60,7 @@ public class ActServiceImpl implements ActService {
     private final MongoTemplate mongoTemplate;
     private final ObjectMapper objectMapper;
     private final CounterpartyExceptionService counterpartyExceptionService;
+    private final SabyAppProperties sabyAppProperties;
     @Value("${app.uploads-dir:uploads}")
     private String uploadsDir;
     public ActServiceImpl(
@@ -66,7 +69,8 @@ public class ActServiceImpl implements ActService {
             SabyService sabyService,
             MongoTemplate mongoTemplate,
             ObjectMapper objectMapper,
-            CounterpartyExceptionService counterpartyExceptionService
+            CounterpartyExceptionService counterpartyExceptionService,
+            SabyAppProperties sabyAppProperties
     ) {
         this.actRepository = actRepository;
         this.fileRepository = fileRepository;
@@ -74,6 +78,7 @@ public class ActServiceImpl implements ActService {
         this.mongoTemplate = mongoTemplate;
         this.objectMapper = objectMapper;
         this.counterpartyExceptionService = counterpartyExceptionService;
+        this.sabyAppProperties = sabyAppProperties;
     }
 
     private void enrichExceptionFlag(ActDocument act) {
@@ -290,7 +295,7 @@ public class ActServiceImpl implements ActService {
     }
 
     @Override
-    public Map<String, Object> sendToSaby(String actId, String documentType) {
+    public Map<String, Object> sendToSaby(String actId, String documentType, Integer counterpartyResponseWaitDays, String sabyAccountId) {
         ActDocument act = actRepository.findById(actId)
                 .orElseThrow(() -> new ResourceNotFoundException("Акт не найден"));
         if (counterpartyExceptionService.isException(act)) {
@@ -300,24 +305,14 @@ public class ActServiceImpl implements ActService {
             throw new BadRequestException("Акт должен быть в статусе '" + ActStatus.ЗАГРУЖЕНО.getDisplayName() + "'");
         }
 
-        Map<String, Object> sabyResponse = sabyService.sendActToSaby(act);
+        int waitDays = resolveCounterpartyResponseWaitDays(counterpartyResponseWaitDays);
+
+        Map<String, Object> sabyResponse = sabyService.sendActToSaby(act, sabyAccountId);
         if (!Boolean.TRUE.equals(sabyResponse.get("success"))) {
             throw new BadRequestException(String.valueOf(sabyResponse.get("message")));
         }
 
-        String sabySendId = String.valueOf(sabyResponse.get("document_id"));
-        String oldStatus = act.getStatus();
-
-        act.setStatus(ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName());
-        act.setSabySendId(sabySendId);
-        act.setSabyResponse(toJsonString(sabyResponse));
-        act.setUpdatedAt(Instant.now());
-        act.getHistory().add(new HistoryEntry(
-                Instant.now(),
-                oldStatus,
-                ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName(),
-                "Отправлено в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
-        ));
+        applySuccessfulSabySend(act, sabyResponse, act.getStatus(), waitDays, sabyAccountId);
 
         ActDocument saved = actRepository.save(act);
         enrichExceptionFlag(saved);
@@ -329,7 +324,8 @@ public class ActServiceImpl implements ActService {
     }
 
     @Override
-    public Map<String, Object> sendBatchToSaby() {
+    public Map<String, Object> sendBatchToSaby(Integer counterpartyResponseWaitDays, String sabyAccountId) {
+        int waitDays = resolveCounterpartyResponseWaitDays(counterpartyResponseWaitDays);
         List<ActDocument> loadedActs = actRepository.findAll().stream()
                 .filter(a -> ActStatus.ЗАГРУЖЕНО.getDisplayName().equals(a.getStatus()))
                 .toList();
@@ -344,23 +340,13 @@ public class ActServiceImpl implements ActService {
         List<Map<String, Object>> errors = new ArrayList<>();
 
         for (ActDocument act : acts) {
-            Map<String, Object> sabyResponse = sabyService.sendActToSaby(act);
+            Map<String, Object> sabyResponse = sabyService.sendActToSaby(act, sabyAccountId);
             if (!Boolean.TRUE.equals(sabyResponse.get("success"))) {
                 errors.add(Map.of("act_id", act.getId(), "error", sabyResponse.get("message")));
                 continue;
             }
 
-            String sabySendId = String.valueOf(sabyResponse.get("document_id"));
-            act.setStatus(ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName());
-            act.setSabySendId(sabySendId);
-            act.setSabyResponse(toJsonString(sabyResponse));
-            act.setUpdatedAt(Instant.now());
-            act.getHistory().add(new HistoryEntry(
-                    Instant.now(),
-                    ActStatus.ЗАГРУЖЕНО.getDisplayName(),
-                    ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName(),
-                    "Массовая отправка в СБИС (" + sabyResponse.get("mode") + "). ID: " + sabySendId
-            ));
+            applySuccessfulSabySend(act, sabyResponse, ActStatus.ЗАГРУЖЕНО.getDisplayName(), waitDays, sabyAccountId);
             actRepository.save(act);
             sentCount++;
         }
@@ -374,6 +360,42 @@ public class ActServiceImpl implements ActService {
         result.put("errors", errors);
         result.put("message", message);
         return result;
+    }
+
+    private int resolveCounterpartyResponseWaitDays(Integer customDays) {
+        int days = customDays != null ? customDays : sabyAppProperties.getCounterpartyResponseWaitDays();
+        if (days < 1 || days > 365) {
+            throw new BadRequestException("Срок ожидания ответа должен быть от 1 до 365 дней");
+        }
+        return days;
+    }
+
+    private void applySuccessfulSabySend(
+            ActDocument act,
+            Map<String, Object> sabyResponse,
+            String previousStatus,
+            int waitDays,
+            String sabyAccountId
+    ) {
+        String sabySendId = String.valueOf(sabyResponse.get("document_id"));
+        Instant now = Instant.now();
+        Instant deadline = now.plus(waitDays, ChronoUnit.DAYS);
+
+        act.setStatus(ActStatus.ОТПРАВЛЕНО_КОНТРАГЕНТУ.getDisplayName());
+        act.setSabySendId(sabySendId);
+        act.setSabyAccountId(sabyAccountId != null ? sabyAccountId : String.valueOf(sabyResponse.get("account_id")));
+        act.setSabyResponse(toJsonString(sabyResponse));
+        act.setSentToCounterpartyAt(now);
+        act.setCounterpartyResponseWaitDays(waitDays);
+        act.setCounterpartyResponseDeadline(deadline);
+        act.setUpdatedAt(now);
+        act.getHistory().add(new HistoryEntry(
+                now,
+                previousStatus,
+                ActStatus.ОТПРАВЛЕНО_КОНТРАГЕНТУ.getDisplayName(),
+                "Подписано и отправлено контрагенту (" + sabyResponse.get("mode") + "). ID: " + sabySendId
+                        + ". Ожидание ответа " + waitDays + " дн. до " + deadline
+        ));
     }
 
     private String toJsonString(Object value) {
@@ -887,10 +909,10 @@ public class ActServiceImpl implements ActService {
 
     private String getStatusComment(String status) {
         if (ActStatus.ОТПРАВЛЕНО_В_СБИС.getDisplayName().equals(status)) {
-            return "Отправлено в СБИС (без подписания)";
+            return "Записано в СБИС";
         }
         if (ActStatus.ОТПРАВЛЕНО_КОНТРАГЕНТУ.getDisplayName().equals(status)) {
-            return "Отправлено контрагенту";
+            return "Подписано нами и отправлено контрагенту, ожидание ответа";
         }
         if (ActStatus.ПОЛУЧЕН_ПОДПИСАННЫЙ.getDisplayName().equals(status)) {
             return "Получен подписанный документ из СБИС";

@@ -20,7 +20,7 @@ public class RestTemplateBeans {
     public RestTemplate sabyRestTemplate() {
         HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory();
         factory.setConnectionRequestTimeout(30000);
-        factory.setReadTimeout(30000);
+        factory.setReadTimeout(120000);
         return new RestTemplate(factory);
     }
 }

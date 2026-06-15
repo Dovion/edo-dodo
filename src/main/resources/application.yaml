@@ -22,6 +22,13 @@ spring:
     property-naming-strategy: SNAKE_CASE
 
 app:
+  saby:
+    # Отложенное подписание без USB-токена на сервере (настройка доверенности — в кабинете Saby)
+    deferred-cert-type: ${SABY_DEFERRED_CERT_TYPE:Отложенный}
+    counterparty-response-wait-days: ${SABY_COUNTERPARTY_WAIT_DAYS:10}
+    poll:
+      enabled: ${SABY_POLL_ENABLED:true}
+      cron: ${SABY_POLL_CRON:0 */2 * * * ?}
   security:
     admin:
       username: admin
@@ -41,5 +48,5 @@ emergent:
 logging:
   level:
     root: INFO
-    ru.lukin: DEBUG
+    ru.lukin.edododo: DEBUG
     org.springframework.data.mongodb.core.MongoTemplate: INFO

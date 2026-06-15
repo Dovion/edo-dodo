@@ -1,11 +1,11 @@
 package ru.lukin.edododo.controller;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import ru.lukin.edododo.dto.SabySendRequest;
 import ru.lukin.edododo.dto.StatusUpdateRequest;
 import ru.lukin.edododo.model.ActDocument;
 import ru.lukin.edododo.service.ActService;
@@ -57,17 +57,23 @@ public class ActController {
     @PostMapping("/acts/{actId}/send-saby")
     public ResponseEntity<Map<String, Object>> sendToSaby(
             @PathVariable String actId,
-            @RequestBody(required = false) Map<String, Object> body
+            @RequestBody(required = false) SabySendRequest request
     ) {
-        String documentType = body != null && body.get("document_type") != null
-                ? String.valueOf(body.get("document_type"))
+        String documentType = request != null && request.getDocumentType() != null
+                ? request.getDocumentType()
                 : "reconciliation_act";
-        return ResponseEntity.ok(actService.sendToSaby(actId, documentType));
+        Integer waitDays = request != null ? request.getCounterpartyResponseWaitDays() : null;
+        String sabyAccountId = request != null ? request.getSabyAccountId() : null;
+        return ResponseEntity.ok(actService.sendToSaby(actId, documentType, waitDays, sabyAccountId));
     }
 
     @PostMapping("/acts/send-batch")
-    public ResponseEntity<Map<String, Object>> sendBatchToSaby() {
-        return ResponseEntity.ok(actService.sendBatchToSaby());
+    public ResponseEntity<Map<String, Object>> sendBatchToSaby(
+            @RequestBody(required = false) SabySendRequest request
+    ) {
+        Integer waitDays = request != null ? request.getCounterpartyResponseWaitDays() : null;
+        String sabyAccountId = request != null ? request.getSabyAccountId() : null;
+        return ResponseEntity.ok(actService.sendBatchToSaby(waitDays, sabyAccountId));
     }
 
     @PostMapping(value = "/acts/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

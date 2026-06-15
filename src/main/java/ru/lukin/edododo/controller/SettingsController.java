@@ -3,6 +3,7 @@ package ru.lukin.edododo.controller;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import ru.lukin.edododo.config.SabyAppProperties;
 import ru.lukin.edododo.dto.SabyAuthRequest;
 import ru.lukin.edododo.model.SabySettingsDocument;
 import ru.lukin.edododo.service.SabyService;
@@ -17,10 +18,23 @@ public class SettingsController {
 
     private final SabyService sabyService;
     private final SettingsService settingsService;
+    private final SabyAppProperties sabyAppProperties;
 
-    public SettingsController(SettingsService settingsService, SabyService sabyService) {
+    public SettingsController(
+            SettingsService settingsService,
+            SabyService sabyService,
+            SabyAppProperties sabyAppProperties
+    ) {
         this.settingsService = settingsService;
         this.sabyService = sabyService;
+        this.sabyAppProperties = sabyAppProperties;
+    }
+
+    @GetMapping("/app")
+    public ResponseEntity<Map<String, Object>> getAppSettings() {
+        return ResponseEntity.ok(Map.of(
+                "counterparty_response_wait_days", sabyAppProperties.getCounterpartyResponseWaitDays()
+        ));
     }
 
     @GetMapping("/saby")
@@ -50,5 +64,14 @@ public class SettingsController {
                 : HttpStatus.BAD_REQUEST;
 
         return ResponseEntity.status(status).body(result);
+    }
+
+    @DeleteMapping("/saby/accounts/{accountId}")
+    public ResponseEntity<Map<String, Object>> removeSabyAccount(@PathVariable String accountId) {
+        settingsService.removeSabyAccount(accountId);
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "Учётная запись удалена"
+        ));
     }
 }

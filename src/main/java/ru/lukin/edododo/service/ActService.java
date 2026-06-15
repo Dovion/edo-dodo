@@ -15,8 +15,8 @@ public interface ActService {
     Map<String, Object> exportActs(String status);
     ActDocument getActById(String actId);
     ActDocument updateActStatus(String actId, StatusUpdateRequest request);
-    Map<String, Object> sendToSaby(String actId, String documentType);
-    Map<String, Object> sendBatchToSaby();
+    Map<String, Object> sendToSaby(String actId, String documentType, Integer counterpartyResponseWaitDays, String sabyAccountId);
+    Map<String, Object> sendBatchToSaby(Integer counterpartyResponseWaitDays, String sabyAccountId);
     Map<String, Object> uploadActs(MultipartFile file);
     Map<String, Object> seedTestData();
     byte[] generateSampleFilesZip();

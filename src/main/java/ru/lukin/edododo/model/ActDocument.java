@@ -46,7 +46,15 @@ public class ActDocument {
 
     private String status;
     private String sabySendId;
+    private String sabyAccountId;
     private String sabyResponse;
+
+    /** Момент отправки контрагенту (после нашей подписи). */
+    private Instant sentToCounterpartyAt;
+    /** Крайний срок ожидания подписи контрагента. */
+    private Instant counterpartyResponseDeadline;
+    /** Срок ожидания ответа контрагента (календарные дни), заданный при отправке. */
+    private Integer counterpartyResponseWaitDays;
 
     private Instant createdAt;
     private Instant updatedAt;
@@ -141,8 +149,24 @@ public class ActDocument {
     public String getSabySendId() { return sabySendId; }
     public void setSabySendId(String sabySendId) { this.sabySendId = sabySendId; }
 
+    public String getSabyAccountId() { return sabyAccountId; }
+    public void setSabyAccountId(String sabyAccountId) { this.sabyAccountId = sabyAccountId; }
+
     public String getSabyResponse() { return sabyResponse; }
     public void setSabyResponse(String sabyResponse) { this.sabyResponse = sabyResponse; }
+
+    public Instant getSentToCounterpartyAt() { return sentToCounterpartyAt; }
+    public void setSentToCounterpartyAt(Instant sentToCounterpartyAt) { this.sentToCounterpartyAt = sentToCounterpartyAt; }
+
+    public Instant getCounterpartyResponseDeadline() { return counterpartyResponseDeadline; }
+    public void setCounterpartyResponseDeadline(Instant counterpartyResponseDeadline) {
+        this.counterpartyResponseDeadline = counterpartyResponseDeadline;
+    }
+
+    public Integer getCounterpartyResponseWaitDays() { return counterpartyResponseWaitDays; }
+    public void setCounterpartyResponseWaitDays(Integer counterpartyResponseWaitDays) {
+        this.counterpartyResponseWaitDays = counterpartyResponseWaitDays;
+    }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
